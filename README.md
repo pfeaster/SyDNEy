@@ -10,4 +10,4 @@ SyDNEy is an interface for Stable Diffusion that offers a number of novel featur
 * Create longer sound files made up of multiple generated audio clips joined cleanly together.
 * Generate batches of images by iterating any parameter or parameters (seed, guidance scale, step count, etc.).
 
-For more details and a basic user guide, see https://griffonagedotcom.wordpress.com/2024/02/07/introducing-sydney-stable-diffusion-numerical-explorer/
+For more details, installation instructions and requirements, and a basic user guide, see https://griffonagedotcom.wordpress.com/2024/02/07/introducing-sydney-stable-diffusion-numerical-explorer/
