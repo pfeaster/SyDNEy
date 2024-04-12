@@ -117,14 +117,16 @@ script_backup_prefix="/script_backup_"
 config_backup_prefix="/config_backup_"
 work_dir='SyDNEy_work/'
      
-def set_scheduler(scheduler_number,first_model,model_ids):
+def set_scheduler(scheduler_number,first_model,model_ids,scheduler_model):
     # Save and re-use scheduler config to avoid needing to reload pipeline
+    if scheduler_model==None:
+        scheduler_model=first_model
     try:
-        sched_config=torch.load(path_to_scheduler_config+str(first_model)+'.pt')
+        sched_config=torch.load(path_to_scheduler_config+str(scheduler_model)+'.pt')
     except:
-        pipeline=StableDiffusionPipeline.from_pretrained(model_ids[first_model])
-        display_status("Setting scheduler "+str(scheduler_number)+" using model "+str(first_model))
-        torch.save(pipeline.scheduler.config,path_to_scheduler_config+str(first_model)+'.pt')
+        pipeline=StableDiffusionPipeline.from_pretrained(model_ids[scheduler_model])
+        display_status("Setting scheduler "+str(scheduler_number)+" using model "+str(scheduler_model))
+        torch.save(pipeline.scheduler.config,path_to_scheduler_config+str(scheduler_model)+'.pt')
         sched_config=pipeline.scheduler.config
     if scheduler_number==0:
         from diffusers import PNDMScheduler
@@ -295,6 +297,9 @@ def generate_prompt_embedding(prompt,tokenizer,text_encoder,tokenizer_2,text_enc
     if prompt_text[0]!='~0':
         display_status("Generating embedding for prompt "+str([prompt_text[0]]))
         
+        prompt_text[0]=prompt_text[0].replace('*','* ')
+        prompt_text[0]=prompt_text[0].replace('  ',' ')
+        
         #Translate natural-language prompt into sequence of numerical tokens
         text_inputs = tokenizer(
             prompt_text[0],
@@ -356,6 +361,8 @@ def generate_prompt_embedding(prompt,tokenizer,text_encoder,tokenizer_2,text_enc
             if prompt_text[1]=='~':
                 prompt_text[1]=''
             display_status("Generating second embedding for prompt "+str([prompt_text[1]]))
+            prompt_text[1]=prompt_text[1].replace('*','* ')
+            prompt_text[1]=prompt_text[1].replace('  ',' ')
             text_inputs = tokenizer_2(
                 prompt_text[1],
                 padding="max_length",
@@ -593,16 +600,24 @@ def generate_noise_latent(seed_to_use,secondary_seed,height,width,noise_variable
         generator = torch.Generator('cpu').manual_seed(seed_to_use)
         latent = torch.randn((1,4,int(height/8),int(width/8)),generator=generator)
     else:
-        # Load as PIL image, encode it, add appropriate noise level
         image_source=noise_variables[5][0][0]
         display_status('image2image: '+image_source)
         try:
-            image_input=Image.open(work_dir+image_source)
+            # Load as PIL image, encode it, add appropriate noise level
+            try:
+                image_input=Image.open(work_dir+image_source)
+            except:
+                image_input=Image.open(image_source)
+            image_input=image_input.convert("RGB")
+            torch.manual_seed(0)
+            latent=to_latent(image_input,vae)
         except:
-            image_input=Image.open(image_source)
-        image_input=image_input.convert("RGB")
-        torch.manual_seed(0)
-        latent=to_latent(image_input,vae)
+            #load .pt file
+            try:
+                package=torch.load(work_dir+image_source)
+            except:
+                package=torch.load(image_source)
+            latent=package[0]
         strength=noise_variables[5][0][1]
         start_step=min(int(num_inference_steps*strength),num_inference_steps)
         #The above effectively inverts the usual strength scale
@@ -708,6 +723,14 @@ def generate_image_latent(latent,scheduler,num_inference_steps,guidance_scales,m
                 if text_encoder_2=='' or neg_prompts[neg_prompt_counter][0]!='':
                     display_status("UNCOND/NEG EMBEDDING:")
                     [uncond_embedding,pooled_uncond_embedding]=generate_prompt_embedding(neg_prompts[neg_prompt_counter],tokenizer,text_encoder,tokenizer_2,text_encoder_2)        
+                    # If negative prompt is assigned a strength other than 1
+                    if neg_prompts[neg_prompt_counter][2]!=1 and neg_prompts[neg_prompt_counter][0]!='':
+                        if text_encoder_2!='': #ForSDXL-type models just multiply
+                            uncond_embedding*=neg_prompts[neg_prompt_counter][2]
+                        else: #otherwise use difference from unconditional embedding
+                            [ref_uncond_embedding,ref_pooled_uncond_embedding]=generate_prompt_embedding(['',[prompt_defaults,prompt_defaults]],tokenizer,text_encoder,tokenizer_2,text_encoder_2)
+                            embedding_diff=uncond_embedding-ref_uncond_embedding
+                            uncond_embedding=ref_uncond_embedding+(embedding_diff*neg_prompts[neg_prompt_counter][2])
                 else:
                     display_status("Using zeroed-out UNCOND/NEG EMBEDDING")
                     uncond_embedding=torch.zeros_like(embedding)
@@ -1118,7 +1141,12 @@ def spectralize(image,sample_rate,win_dur,audio_channels):
         Sxx_torch = torch.from_numpy(data).to(torch_device)
         Sxx_torch = mel_inv_scaler(Sxx_torch)
         specgram[color_channel]=Sxx_torch.to('cpu')
-        angles[color_channel] = altGriffinLim(Sxx_torch,sample_rate,win_dur).to('cpu')                  
+        angles[color_channel] = altGriffinLim(Sxx_torch,sample_rate,win_dur).to('cpu')   
+    #To clear CUDA memory
+    if torch_device=='cuda':
+        Sxx_torch=torch.zeros(1)
+        Sxx_torch=Sxx_torch.to('cpu')
+        torch.cuda.empty_cache()
     return specgram,angles
 
 def toWaveform(specgram,angles,sample_rate,win_dur):
@@ -1318,10 +1346,10 @@ def engage_script(engage_mode):
             display_status("No sydney_config.txt file found, using default configuration.")
     
     job_string_inputs=job_string_input_whole.split('#restart')
-    
+
     for job_string_input in job_string_inputs:
-               
-        try:    
+        if True:       
+        #try:    
             if configuration!='':        
                 config_parts=configuration.split('#')
                 for config_part in config_parts:
@@ -1347,6 +1375,8 @@ def engage_script(engage_mode):
                 job_string_input=job_string_input.replace('$reverse','$reverse 1')
                 job_string_input=job_string_input.replace('$keep_width','$keep_width 1')
                 job_string_input=job_string_input.replace('$double','$double 1')  
+                job_string_input=job_string_input.replace('$nodecode','$nodecode 1')
+                job_string_input=job_string_input.replace('$noimgsave','$noimgsave 1')
             
             # Unpack scrape jobs
             while '#scrape' in job_string_input or '#for' in job_string_input:
@@ -1355,7 +1385,13 @@ def engage_script(engage_mode):
                     end_scrape=job_string_input[start_scrape:].find(':')
                     before_part=job_string_input[:start_scrape]
                     after_part=job_string_input[end_scrape+start_scrape:]
-                    scrape_segment=job_string_input[start_scrape+8:end_scrape+start_scrape].split(' ',maxsplit=1)
+                    
+                    if job_string_input[start_scrape+7:start_scrape+10]=='dir':
+                        scrape_segment=job_string_input[start_scrape+11:end_scrape+start_scrape].split(' ',maxsplit=1)
+                        scrapedir=1
+                    else:
+                        scrape_segment=job_string_input[start_scrape+8:end_scrape+start_scrape].split(' ',maxsplit=1)
+                        scrapedir=0    
                     scrape_variable=scrape_segment[0].strip()
                     scrape_directory=scrape_segment[1].strip()
                     try:
@@ -1366,8 +1402,10 @@ def engage_script(engage_mode):
                         files=os.listdir(scrape_directory_temp)
                     scrape_string='#for '+scrape_variable+' '
                     for file in files:
-                        if os.path.isfile(scrape_directory_temp+'/'+file): 
+                        if scrapedir==0 and os.path.isfile(scrape_directory_temp+'/'+file): 
                             # Should the above be limitable to certain file types? How?
+                            scrape_string+=scrape_directory+'/'+file+';'
+                        elif scrapedir==1 and os.path.isdir(scrape_directory_temp+'/'+file):
                             scrape_string+=scrape_directory+'/'+file+';'
                     scrape_string=scrape_string[:-1]
                     job_string_input=before_part+scrape_string+after_part
@@ -1378,7 +1416,7 @@ def engage_script(engage_mode):
                     # Unpack multiple jobs from all specified 'for' loops, if any, including nested ones
                     start_for=job_string_input.find('#for')
                     for_variable=job_string_input[start_for+5:].split(' ',maxsplit=1)
-                    end_for=job_string_input.find('#end '+for_variable[0])
+                    end_for=job_string_input.find('#end '+for_variable[0],start_for)
                     string_to_unpack=job_string_input[start_for:end_for]
                     before_part=job_string_input[:start_for]
                     after_part=job_string_input[end_for+5+len(for_variable[0]):]
@@ -1506,7 +1544,18 @@ def engage_script(engage_mode):
                 ldict={}
                 exec('exp_eval='+exp,globals(),ldict)
                 exp_eval=ldict['exp_eval']
-                job_string_input=job_string_input.replace('{'+exp+'}',str(exp_eval))
+                job_string_input=job_string_input.replace('{'+exp+'}',str(exp_eval))  
+                
+            while '#copy' in job_string_input:
+                start_exp=job_string_input.find('#copy')
+                copy_source=job_string_input[start_exp+6:].split(' ',maxsplit=1)[0]
+                try:
+                    package=torch.load(copy_source)
+                    copy_string=package[1].strip()
+                    #print('>>'+copy_string)
+                except:
+                    copy_string='***CANCEL***' #to stop jobs from being run
+                job_string_input=job_string_input.replace('#copy '+copy_source,copy_string+' #break ')
                 
             #Split (unpacked) individual job strings into separate items in a list
             job_string_list=job_string_input.split('#new')
@@ -1515,7 +1564,7 @@ def engage_script(engage_mode):
             jobs=[]
             raw_job_strings=[]
             for raw_job_string in job_string_list:
-                if raw_job_string.strip()!='': #Guards against an initial '#new' or equivalent
+                if raw_job_string.strip()!='' and '***CANCEL***' not in raw_job_string: #First condition guards against an initial '#new' or equivalent
                     raw_job_strings.append(raw_job_string)
                     if engage_mode==0 or engage_mode==2:
                         raw_job_string=raw_job_string.replace('$','^$')
@@ -1599,7 +1648,8 @@ def engage_script(engage_mode):
                                 job[step]={}
                         if job!={}:
                             jobs.append(job)
-        except:
+        else:
+        #except:
             if engage_mode==1 and len(job_string_inputs)>1:
                 display_status("Error parsing job log.  However, the script contains a #restart, so parsing later parts of the script may depend on actions taken during earlier parts.")
             else:
@@ -1617,16 +1667,23 @@ def engage_script(engage_mode):
             skipjobs=[]
             for jobcount,job in enumerate(jobs):
                 display_job("JOB "+str(jobcount)+":\n"+raw_job_strings[jobcount].strip())
-                status_text.delete("1.0", tk.END)
-                job_text.update()
-                status_text.update()
-
+                #status_text.delete("1.0", tk.END) 
+                #job_text.update()
+                #status_text.update()
+                display_status("===================\nJOB "+str(jobcount)+'\n===================')
+                #if True:
                 try:
                     #Set non-step-specific variables
                     if 'name' in job:
                         filename_root=job['name']
                     else:
                         filename_root=''
+                        
+                    if 'prename' in job:
+                        filename_root=job['prename']+'_'+filename_root
+                        
+                    if 'postname' in job:
+                        filename_root=filename_root+'_'+job['postname']
                         
                     if 'dir' in job:
                         if job['dir'].startswith(work_dir):
@@ -1666,12 +1723,27 @@ def engage_script(engage_mode):
                     else:
                         scheduler_number=3
                         
+                    if 'schmod' in job:
+                        scheduler_model=int(job['schmod'])
+                    else:
+                        scheduler_model=None
+                        
                     if 'audio' in job:
                         audio_out=1
                         audio_channels=int(job['audio'])
                     else:
                         audio_out=0
                         audio_channels=2
+                        
+                    if 'nodecode' in job:
+                        nodecode=1
+                    else:
+                        nodecode=0
+                        
+                    if 'noimgsave' in job:
+                        noimgsave=1
+                    else:
+                        noimgsave=0
                         
                     if 'mem' in job:
                         models_in_memory=int(job['mem'])
@@ -1782,7 +1854,7 @@ def engage_script(engage_mode):
                                     prompt_variables2[argnum]=num_parse(step_args[arg])
                                 elif arg in job:
                                     prompt_variables2[argnum]=num_parse(job[arg])
-                        prompts.append([prompt,[prompt_variables,prompt_variables2]])
+                        prompts.append([prompt,[prompt_variables,prompt_variables2],1])
                         
                         #Set negative prompt and negative prompt variables
                         if 'neg_prompt' in step_args:
@@ -1796,9 +1868,15 @@ def engage_script(engage_mode):
                         elif '2neg_prompt' in job:
                             neg_prompt=[neg_prompt,job['2neg_prompt']]
                         if '3neg_prompt' in step_args:
-                            neg_prompt.append(step_args['3neg_prompt'])
+                            try:
+                                neg_prompt.append(step_args['3neg_prompt'])
+                            except:
+                                neg_prompt=[neg_prompt,neg_prompt,step_args['3neg_prompt']]
                         elif '3neg_prompt' in job:
-                            neg_prompt.append(job['3neg_prompt'])    
+                            try:
+                                neg_prompt.append(job['3neg_prompt'])       
+                            except:
+                                neg_prompt=[neg_prompt,neg_prompt,step_args['3neg_prompt']]
                                
                         neg_prompt_variables=prompt_defaults.copy()
                         neg_arglist=['neg_raw+','neg_proc+','neg_*','neg_pad+','neg_dyna-pad','neg_avg-pad','neg_padx','neg_posx','neg_rawx','neg_procx','neg_endtok']
@@ -1817,7 +1895,14 @@ def engage_script(engage_mode):
                                     neg_prompt_variables2[argnum]=num_parse(step_args[arg])
                                 elif arg in job:
                                     neg_prompt_variables2[argnum]=num_parse(job[arg])
-                        neg_prompts.append([neg_prompt,[neg_prompt_variables,neg_prompt_variables2]])
+                                    
+                        if 'negx' in step_args:
+                            negx=num_parse(step_args['negx'])[0][0]
+                        elif 'negx' in job:
+                            negx=num_parse(job['negx'])[0][0]
+                        else:
+                            negx=1
+                        neg_prompts.append([neg_prompt,[neg_prompt_variables,neg_prompt_variables2],negx])
                         
                         #Set guidance scales
                         if 'guid' in step_args:
@@ -1923,11 +2008,13 @@ def engage_script(engage_mode):
                         shiftback=1
                     else:
                         shiftback=0   
+                #else:
                 except:
                     display_status("Error parsing job variables for JOB "+str(jobcount)+" -- skipping.")
                     skipjobs.append(jobcount)
                     
                 if jobcount not in skipjobs and continue_script==1 and jobcount>=resume_point:
+                    #if True:   
                     try:
                         # Intercept concatenation jobs that don't involve SD inference
                         if 'wavcat' in job:
@@ -1949,6 +2036,12 @@ def engage_script(engage_mode):
                                 win_dur=int(job['windur'])
                             else:
                                 win_dur=100
+                            if torch_device=='cuda':
+                                # To clear CUDA memory
+                                models=torch.zeros(1).to('cpu')
+                                torch.cuda.empty_cache()
+                                models_in_memory=0
+                                old_model_numbers=-1
                             wavcat(wavcat_directory,vae_option,chunk_size,overlap_size,overlap_type,sample_rate,win_dur,subfolder,audio_channels,autype,raw_job_strings[jobcount])
                         elif 'wavprep' in job:
                             wavprep_source=job['wavprep']
@@ -2001,7 +2094,7 @@ def engage_script(engage_mode):
                             else:
                                 display_status('Using same model arrangement as last job')
                             if scheduler_number!=old_scheduler_number:
-                                scheduler=set_scheduler(scheduler_number,model_numbers[0],model_ids)
+                                scheduler=set_scheduler(scheduler_number,model_numbers[0],model_ids,scheduler_model)
                             if vae_number!=old_vae_number:
                                 display_status("Using VAE from model "+str(vae_number))
                                 vae=AutoencoderKL.from_pretrained(model_ids[vae_number],subfolder="vae")
@@ -2022,14 +2115,23 @@ def engage_script(engage_mode):
                             torch.save(package,filename+'.pt')
                             #Delete model data to free up memory
                             display_status('Generating image from latent.')
-                            image=generate_image_from_latent(vae,latent)
-                            display_status('Saving image.')
-                            image.save(filename+'.'+imtype)
-                            refresh_image_display(image)
-                            display_caption(filename+'.'+imtype)
+                            if nodecode==0:
+                                image=generate_image_from_latent(vae,latent)
+                                refresh_image_display(image)
+                                if noimgsave==0:
+                                    display_status('Saving image.')
+                                    image.save(filename+'.'+imtype)
+                                    display_caption(filename+'.'+imtype)
+                                else:
+                                    display_caption(filename+'.pt')
+                            else:
+                                display_caption(filename+'.pt\nNOT DISPLAYED')
                             if audio_out==1:
-                                display_status('Generating audio.')
-                                spectrophone(image,filename,audio_channels,sample_rate,autype)
+                                if nodecode==0:
+                                    display_status('Generating audio.')
+                                    spectrophone(image,filename,audio_channels,sample_rate,autype)
+                                else:
+                                    display_status("Can't generate audio because image latent not decoded.")
                             display_status('Logging job.')
                             if not os.path.exists(path_to_csv_log):
                                 csvfile=open(path_to_csv_log, mode='w', newline='')
@@ -2058,6 +2160,7 @@ def engage_script(engage_mode):
                             file=open(path_to_resume_point,'w')
                             file.write(str(jobcount+1))
                             file.close()
+                    #else:
                     except:
                         display_status("Error running JOB "+str(jobcount)+" -- skipping")
                 elif continue_script==0:
@@ -2332,4 +2435,3 @@ resume_script_button = tk.Button(root, text="Resume Script", command=resume_scri
 resume_script_button.place(x=835,y=340)
 
 tk.mainloop()
-
