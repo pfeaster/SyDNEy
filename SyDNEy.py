@@ -186,8 +186,12 @@ def vary_embedding(embedding,mult_prompt_variables,add_prompt_variables):
     #MULTIPLICATIONS 
     if mult_prompt_variables!=[[1,0,0,0,0]]:
         for entry in mult_prompt_variables:
-            if entry[2]==-1:
-                entry[2]=embedding.shape[2]-1
+            if len(entry)>=2:
+                if entry[1]==-1:
+                    entry[1]=embedding.shape[2]-1
+            if len(entry)>=3:
+                if entry[2]==-1:
+                    entry[2]=embedding.shape[2]-1
             if len(entry)==5:
                 embedding[0,entry[3]:entry[4]+1,entry[1]:entry[2]+1]*=entry[0]
             elif len(entry)==4:
@@ -201,8 +205,12 @@ def vary_embedding(embedding,mult_prompt_variables,add_prompt_variables):
     #ADDITIONS    
     if add_prompt_variables!=[[0,0,0,0,0]]:
         for entry in add_prompt_variables:
-            if entry[2]==-1:
-                entry[2]=embedding.shape[2]-1
+            if len(entry)>=2:
+                if entry[1]==-1:
+                    entry[1]=embedding.shape[2]-1
+            if len(entry)>=3:
+                if entry[2]==-1:
+                    entry[2]=embedding.shape[2]-1
             if len(entry)==5:
                 embedding[0,entry[3]:entry[4]+1,entry[1]:entry[2]+1]+=entry[0]
             elif len(entry)==4:
@@ -252,7 +260,8 @@ def build_raw_embedding(token_numbers,token_emb_layer,prompt_variables):
             raw_prompt_embedding[0,counter,:]=token_emb_layer(token_numbers[counter]) ####
             #Steps to take once end token is reached
             if int(token_numbers[counter])==49407:
-                if prompt_variables[3]!=[[0,0]] or prompt_variables[4]!=[[0]] or prompt_variables[5]!=[[0]] or prompt_variables[6]==[[0]] or prompt_variables[10]!=[[0]]:
+                #if prompt_variables[3]!=[[0,0]] or prompt_variables[4]!=[[0]] or prompt_variables[5]!=[[0]] or prompt_variables[6]==[[0]] or prompt_variables[10]!=[[0]]:
+                if prompt_variables[3]!=[[0,0]] or prompt_variables[4]!=[[0]] or prompt_variables[5]!=[[0]] or prompt_variables[6]!=[[1]] or prompt_variables[10]!=[[0]]:
                     endtok_current=counter
                     display_status("Row "+str(counter)+": Found first end token, will adjust rows accordingly")
                     adjust_padding=1
