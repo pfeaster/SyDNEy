@@ -68,7 +68,7 @@ os.chdir(os.path.dirname(__file__))
 
 def write_config(path_to_config):
     config_lines=['#models ',
-                  'runwayml/stable-diffusion-v1-5;'
+                  'stable-diffusion-v1-5/stable-diffusion-v1-5;'
                   'riffusion/riffusion-model-v1;',
                   'stabilityai/stable-diffusion-2-1;',
                   'stabilityai/stable-diffusion-2-1-base;',
