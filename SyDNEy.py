@@ -34,7 +34,7 @@ try:
 except:
     missing_dependencies.append('torchvision')
 try:
-    from PIL import Image, ImageTk
+    from PIL import Image, ImageTk, ImageOps
 except:
     missing_dependencies.append('Pillow (PIL)')
 
@@ -105,7 +105,8 @@ def write_config(path_to_config):
                     'prompthero/openjourney-v4;',
                     'nitrosocke/Nitro-Diffusion;',
                     'Envvi/Inkpunk-Diffusion;',
-                    'proximasanfinetuning/luna-diffusion']
+                    'proximasanfinetuning/luna-diffusion;',
+                    'CompVis/stable-diffusion-v1-1']
     with open(path_to_config, 'w') as file:
         for line in config_lines:
             file.write(line+'\n')
@@ -1540,30 +1541,30 @@ def stagger_generate_image_latent(latent, concat_stepstarts, concat_stepvars, h_
                 temp_latent = scheduler_set[stagger_count].step(
                     noise_pred, t, temp_latent).prev_sample
 
-                # Iterate and/or reset counters
-                last_prompt = prompts[prompt_counter]
-                prompt_counter += 1
-                if prompt_counter == len(prompts):
-                    prompt_counter = 0
-                neg_prompt_counter += 1
-                if neg_prompt_counter == len(neg_prompts):
-                    neg_prompt_counter = 0
-                guidance_counter += 1
-                if guidance_counter == len(guidance_scales):
-                    guidance_counter = 0
-                contrastives_counter += 1
-                if contrastives_counter == len(contrastives):
-                    contrastives_counter = 0
-                step_latent_counter += 1
-                if step_latent_counter == len(step_latent_variables):
-                    step_latent_counter = 0
-
                 # Substitute result of this step to the correct position concatenated whole latent
                 if verticals == 1:
                     latent[:, :, :, concat_stepstarts[stagger_count]:concat_stepstarts[stagger_count+1]] = temp_latent
                 else:
                     latent[:, :, coord[0]:coord[1],
                            coord[2]:coord[3]] = temp_latent
+                    
+            # Iterate and/or reset counters
+            last_prompt = prompts[prompt_counter]
+            prompt_counter += 1
+            if prompt_counter == len(prompts):
+                prompt_counter = 0
+            neg_prompt_counter += 1
+            if neg_prompt_counter == len(neg_prompts):
+                neg_prompt_counter = 0
+            guidance_counter += 1
+            if guidance_counter == len(guidance_scales):
+                guidance_counter = 0
+            contrastives_counter += 1
+            if contrastives_counter == len(contrastives):
+                contrastives_counter = 0
+            step_latent_counter += 1
+            if step_latent_counter == len(step_latent_variables):
+                step_latent_counter = 0
 
             # AFTER PROCESSING THIS STEP, SHIFT WHOLE LATENT BY DESIGNATED AMOUNT
             # This is where the "staggering" occurs
@@ -2054,7 +2055,7 @@ def wavWrite(waveform, filename, sample_rate):
     sf.write(filename, waveform_adjusted.T, sample_rate)
 
 
-def wavcat(filepath, vae_option, chunk_size, overlap_size, overlap_type, sample_rate, win_dur, subfolder, audio_channels, autype, raw_job_string):
+def wavcat(filepath, vae_option, chunk_size, overlap_size, overlap_type, sample_rate, win_dur, subfolder, audio_channels, autype, raw_job_string, audio_inv):
     job = [filepath, vae_option, chunk_size, overlap_size, overlap_type,
            sample_rate, win_dur, subfolder, audio_channels, autype]
     if filepath.startswith(work_dir):
@@ -2075,6 +2076,8 @@ def wavcat(filepath, vae_option, chunk_size, overlap_size, overlap_type, sample_
             package_contents = torch.load(folder_filepath+'/'+image_location)
             recreated_job_string += '#new '+str(package_contents[1])
             image_file = package_contents[0]
+            if audio_inv==1:
+                image_file*=-1
             if counter == 0:
                 tiled_image = image_file
                 counter = 1
@@ -2259,6 +2262,24 @@ def wavcat(filepath, vae_option, chunk_size, overlap_size, overlap_type, sample_
                             display_status("Error: "+str(e))
                             continue_trying=0
             
+
+def evalstring(job_string_input):
+    while '{' in job_string_input:
+        start_exp = job_string_input.find('{')
+        end_exp = job_string_input.find('}')
+        exp = job_string_input[start_exp+1:end_exp]
+        ldict = {}
+        try:
+            exec('exp_eval='+exp, globals(), ldict)
+            exp_eval = ldict['exp_eval']
+            job_string_input = job_string_input.replace(
+                '{'+exp+'}', str(exp_eval))
+        except:
+            job_string_input=job_string_input[:start_exp]+'«'+job_string_input[start_exp+1:]
+    job_string_input=job_string_input.replace('«',"{")
+    return(job_string_input)
+       
+
 def run_script():
     engage_script(0)
 
@@ -2414,6 +2435,7 @@ def engage_script(engage_mode):
                                     scrape_string += scrape_directory+'/'+file+';'
                         scrape_string = scrape_string[:-1]
                         job_string_input = before_part+scrape_string+after_part
+                        job_string_input = evalstring(job_string_input)
 
                     # Nested here in case a #scrape loop is accessed by another #scrape loop
                     while '#comb' in job_string_input:
@@ -2469,6 +2491,7 @@ def engage_script(engage_mode):
                                 new_string+=rep_part_temp
                         new_string+=after_part
                         job_string_input=new_string
+                        job_string_input = evalstring(job_string_input)
 
                     while '#for' in job_string_input:
                         # Note, if only one option listed under #for there's an error -- does this need fixing?
@@ -2493,6 +2516,7 @@ def engage_script(engage_mode):
                                 for_variable[0], substitution)
                         new_string += after_part
                         job_string_input = new_string
+                        job_string_input = evalstring(job_string_input)
 
                 while '#incr' in job_string_input:
                     start_incr = job_string_input.find('#incr')
@@ -2566,6 +2590,7 @@ def engage_script(engage_mode):
                         incr += incr_step
                     new_string += after_part
                     job_string_input = new_string
+                    job_string_input = evalstring(job_string_input)
 
                 set_insertions=['']
                 while '#set' in job_string_input:
@@ -2613,6 +2638,7 @@ def engage_script(engage_mode):
                     # Rejoin before part, initial #set string minus contrast, #set sequence, and after part
                     new_string = before_part+backup_string_to_unpack+string_to_unpack[1]+after_part
                     job_string_input = new_string  
+                    job_string_input = evalstring(job_string_input)
                       
                 while '#each' in job_string_input:
                     current_variable=0
@@ -2633,17 +2659,7 @@ def engage_script(engage_mode):
                             current_variable=0
                     new_string = before_part+string_to_unpack[1]+after_part
                     job_string_input = new_string
-
-                while '{' in job_string_input:
-                    start_exp = job_string_input.find('{')
-                    end_exp = job_string_input.find('}')
-                    exp = job_string_input[start_exp+1:end_exp]
-                    ldict = {}
-                    exec('exp_eval='+exp, globals(), ldict)
-                    exp_eval = ldict['exp_eval']
-                    job_string_input = job_string_input.replace(
-                        '{'+exp+'}', str(exp_eval))
-
+                    job_string_input = evalstring(job_string_input)
 
                 while '#copy' in job_string_input:
                     start_exp = job_string_input.find('#copy')
@@ -2705,6 +2721,7 @@ def engage_script(engage_mode):
                                 new_job_string+="#new"+copy_string_piece+' #break '+addendum    
                         
                     job_string_input=new_job_string+afterpart
+                    job_string_input = evalstring(job_string_input)
 
                 job_string_input_pieces = []
                 job_string_input_staggermode = []
@@ -3002,6 +3019,11 @@ def engage_script(engage_mode):
                                         else:
                                             audio_out = 0
                                             audio_channels = 2
+                                            
+                                        if 'audinv' in job:
+                                            audio_inv = int(job['audinv'])
+                                        else:
+                                            audio_inv = 0
 
                                         if 'nodecode' in job:
                                             nodecode = 1
@@ -3420,7 +3442,7 @@ def engage_script(engage_mode):
                                                     models_in_memory = 0
                                                     old_model_numbers = -1
                                                 wavcat(wavcat_directory, vae_option, chunk_size, overlap_size, overlap_type,
-                                                       sample_rate, win_dur, subfolder, audio_channels, autype, raw_job_strings[jobcount])
+                                                       sample_rate, win_dur, subfolder, audio_channels, autype, raw_job_strings[jobcount],audio_inv)
                                                 if continue_script == 0:
                                                     display_status(
                                                         "Script stopped by request.  Click 'Resume Script' to resume with the next job number.")
@@ -3593,6 +3615,8 @@ def engage_script(engage_mode):
                                                         if nodecode == 0:
                                                             display_status(
                                                                 'Generating audio.')
+                                                            if audio_inv==1:
+                                                                image=ImageOps.invert(image)
                                                             spectrophone(
                                                                 image, filename, audio_channels, sample_rate, autype)
                                                         else:
