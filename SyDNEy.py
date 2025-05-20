@@ -1,9 +1,5 @@
 # We'll assume the following basic libraries are installed
-import os
-import datetime
-import csv
-import tkinter as tk
-import copy
+import os,datetime,csv,tkinter as tk,copy,shutil
 from tkinter import simpledialog as sd, filedialog as fd
 from itertools import combinations
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
@@ -1089,6 +1085,7 @@ def generate_image_latent(latent, scheduler, num_inference_steps, guidance_scale
 
             display_status("Inference timestep: "+str(tcount+1) +
                            "/"+str(len(scheduler.timesteps)))
+            display_step(str(tcount+1) + "/"+str(len(scheduler.timesteps)))
             if tcount == start_step or len(step_latent_variables) > 1:
                 latent = vary_latent(
                     latent, step_latent_variables[step_latent_counter])
@@ -1267,6 +1264,7 @@ def generate_image_latent(latent, scheduler, num_inference_steps, guidance_scale
             step_latent_counter += 1
             if step_latent_counter == len(step_latent_variables):
                 step_latent_counter = 0           
+    display_step('')
     return latent
 
 def stagger_generate_image_latent(latent, concat_stepstarts, concat_stepvars, h_shift_in, v_shift_in, verticals, shiftback):
@@ -1355,6 +1353,7 @@ def stagger_generate_image_latent(latent, concat_stepstarts, concat_stepvars, h_
         if tcount >= start_step:
             display_status("Inference timestep: "+str(tcount+1) +
                            "/"+str(len(scheduler.timesteps)))
+            display_step(str(tcount+1) + "/"+str(len(scheduler.timesteps)))
             for stagger_count in range(len(concat_stepstarts)-1):
                 display_status("Processing staggered chunk " +
                                str(stagger_count))
@@ -1601,6 +1600,7 @@ def stagger_generate_image_latent(latent, concat_stepstarts, concat_stepvars, h_
     stored_tokenizers = {}
     if torch_device == 'cuda':
         torch.cuda.empty_cache()
+    display_step('')
     return latent
 
 
@@ -1791,6 +1791,7 @@ def make_spectrogram_from_audio(waveform, filename, sample_rate, normalize, rewi
 
 
 def prep_audio_input(path, subfolder, estimatedDuration, testMargin, reverse, normalize, rewidth, defwidth, freqblur, double, imtype):
+    display_status("Preparing spectrograms for "+path)
     try:
         y_in, sr = a2n.audio_from_file(path)
     except:
@@ -2055,7 +2056,7 @@ def wavWrite(waveform, filename, sample_rate):
     sf.write(filename, waveform_adjusted.T, sample_rate)
 
 
-def wavcat(filepath, vae_option, chunk_size, overlap_size, overlap_type, sample_rate, win_dur, subfolder, audio_channels, autype, raw_job_string, audio_inv):
+def wavcat(filepath, vae_option, chunk_size, overlap_size, overlap_type, sample_rate, win_dur, subfolder, audio_channels, autype, raw_job_string, audio_inv, folder_delete):
     job = [filepath, vae_option, chunk_size, overlap_size, overlap_type,
            sample_rate, win_dur, subfolder, audio_channels, autype]
     if filepath.startswith(work_dir):
@@ -2261,7 +2262,9 @@ def wavcat(filepath, vae_option, chunk_size, overlap_size, overlap_type, sample_
                         except Exception as e:
                             display_status("Error: "+str(e))
                             continue_trying=0
-            
+    if folder_delete==1:
+        display_status("Deleting wavcat source folder.")
+        shutil.rmtree(folder_filepath)        
 
 def evalstring(job_string_input):
     while '{' in job_string_input:
@@ -2376,6 +2379,8 @@ def engage_script(engage_mode):
                         '$namestrip', '$namestrip 1')
                     job_string_input = job_string_input.replace(
                         '$nopt', '$nopt 1')
+                    job_string_input = job_string_input.replace(
+                        '$deldir', '$deldir 1')
                     
                 # Get a manual resume point if present
                 if '#resume' in job_string_input and resume_point==0:
@@ -2404,7 +2409,8 @@ def engage_script(engage_mode):
                                 0]
                         else:
                             extension = ''
-                        job_string_input = job_string_input.replace('='+extension, '', 1)
+                        if extension!='':
+                            job_string_input = job_string_input.replace('='+extension,'')
                         end_scrape = job_string_input[start_scrape:].find(':')
                         before_part = job_string_input[:start_scrape]
                         after_part = job_string_input[end_scrape+start_scrape:]
@@ -2419,6 +2425,7 @@ def engage_script(engage_mode):
                             scrapedir = 0
                         scrape_variable = scrape_segment[0].strip()
                         scrape_directory = scrape_segment[1].strip()
+                        
                         try:
                             scrape_directory_temp = work_dir+scrape_directory
                             files = os.listdir(scrape_directory_temp)
@@ -2452,7 +2459,7 @@ def engage_script(engage_mode):
                             ' ', maxsplit=2)
                         group_size = int(process_string_parts[1])
                         process_string_parts = process_string_parts[2].split(
-                            '/', maxsplit=3)
+                            '/', maxsplit=2)
                         if len(process_string_parts)==3: #if a punctuator is specified
                             punctuator = process_string_parts[1]
                             string_to_unpack = process_string_parts[2].split(':', maxsplit=1)[
@@ -3434,6 +3441,11 @@ def engage_script(engage_mode):
                                                         job['windur'])
                                                 else:
                                                     win_dur = 100
+                                                    
+                                                if 'deldir' in job:
+                                                    folder_delete = 1
+                                                else:
+                                                    folder_delete = 0
                                                 if torch_device == 'cuda':
                                                     # To clear CUDA memory
                                                     models = torch.zeros(
@@ -3442,7 +3454,7 @@ def engage_script(engage_mode):
                                                     models_in_memory = 0
                                                     old_model_numbers = -1
                                                 wavcat(wavcat_directory, vae_option, chunk_size, overlap_size, overlap_type,
-                                                       sample_rate, win_dur, subfolder, audio_channels, autype, raw_job_strings[jobcount],audio_inv)
+                                                       sample_rate, win_dur, subfolder, audio_channels, autype, raw_job_strings[jobcount],audio_inv,folder_delete)
                                                 if continue_script == 0:
                                                     display_status(
                                                         "Script stopped by request.  Click 'Resume Script' to resume with the next job number.")
@@ -3779,7 +3791,12 @@ def display_status(status):
     status_text.insert(tk.END, status+'\n')
     status_text.update()
     status_text.see("end")
-
+    
+def display_step(step):
+    steps_text.delete("1.0", tk.END)
+    steps_text.insert(tk.END, step+'\n')
+    steps_text.update()
+    steps_text.see("end")
 
 def display_caption(caption):
     caption_text.delete("1.0", tk.END)
@@ -4077,5 +4094,8 @@ resume_script_button.place(x=835, y=340)
 color_picker_button = tk.Button(
     root, text="Color Picker", command=color_picker)
 color_picker_button.place(x=835, y=370)
+
+steps_text = tk.Text(root, bg="gray35", fg="white", height=2, width=7,font=("Arial",15))
+steps_text.place(x=835, y=410)
 
 tk.mainloop()
