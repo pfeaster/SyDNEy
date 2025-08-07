@@ -1,5 +1,5 @@
 # We'll assume the following basic libraries are installed
-import os,datetime,csv,tkinter as tk,copy,shutil
+import os,datetime,tkinter as tk,copy,shutil
 from tkinter import simpledialog as sd, filedialog as fd
 from itertools import combinations
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
@@ -275,6 +275,13 @@ def comb_modify(combinations_in):
     return new_combination_set
 
 def build_raw_embedding(token_numbers, token_emb_layer, prompt_variables):
+    
+    # Dummy placeholder values
+    raw_prompt_embedding_order=[]
+    order_count=[]
+    raw_prompt_embedding_mean=[]
+    raw_prompt_embedding_mean_alt=[]
+    
     raw_prompt_embedding = torch.zeros((1, 77, token_emb_layer.embedding_dim))
     asterisk_counter = 0  # counts asterisks encountered in prompt
     and_counter = 0  # counts &s encountered in prompt
@@ -322,7 +329,6 @@ def build_raw_embedding(token_numbers, token_emb_layer, prompt_variables):
             raw_prompt_embedding[0, counter, :] = token_emb_layer(
                 token_numbers[counter_orig])
             # Steps to take once end token is reached
-            first_endtok_reached = 0
             if int(token_numbers[counter_orig]) == 49407:
                 endtok_current = counter
                 # if prompt_variables[3]!=[[0,0]] or prompt_variables[4]!=[[0]] or prompt_variables[5]!=[[0]] or prompt_variables[6]==[[0]] or prompt_variables[10]!=[[0]]:
@@ -825,7 +831,7 @@ def get_white_latent(latent):
     return white_latent
 
 
-def vary_latent(latent, noise_variables):
+def vary_latent(latent, noise_variables,mix):
     global cumulative_shift
     if noise_variables != [[[1, 1, 1, 1]], [[0, 0, 0, 0]], [[0]], [[0, 0]], [[0, 0, 0, 0, 0]]]:
         if noise_variables[0] != [[1, 1, 1, 1]]:
@@ -942,9 +948,10 @@ def vary_latent(latent, noise_variables):
                 # specified row becomes the leftmost row, rest moved to right
                 else:
                     latent = latent_shift(latent, 0, h_shift)
-            cumulative_shift[0] += v_shift
-            cumulative_shift[1] += h_shift
-            display_status("Cumulative shift "+str(cumulative_shift))
+            if mix==0:
+                cumulative_shift[0] += v_shift
+                cumulative_shift[1] += h_shift
+                display_status("Cumulative shift "+str(cumulative_shift))
         if noise_variables[4] != [[0, 0, 0, 0, 0]]:
             for entry in noise_variables[4]:
                 for npart_val in range(2):
@@ -984,12 +991,11 @@ def vary_latent(latent, noise_variables):
 
 def to_latent(img: Image, vae):
     generator = torch.Generator("cpu").manual_seed(
-        0)  # does appear deterministic
-    # copied encoding method below from SD Deep Dive
+        0)
     with torch.no_grad():
         latent = vae.encode(tfms.ToTensor()(img).unsqueeze(
             0).to(torch_device)*2-1)  # Note scaling
-    return vae.config.scaling_factor * latent.latent_dist.sample()
+    return vae.config.scaling_factor * latent.latent_dist.sample(generator=generator)
 
 def generate_noise_latent(seed_to_use, secondary_seed, height, width, noise_variables, scheduler, vae, num_inference_steps):
     if noise_variables[5] == [['', 0]] and noise_variables[6] == [[0,0,0,0,0]]:
@@ -1045,10 +1051,11 @@ def generate_noise_latent(seed_to_use, secondary_seed, height, width, noise_vari
                                      scheduler.timesteps[start_step]]))
     if secondary_seed != None:
         torch.manual_seed(secondary_seed)
-    latent = vary_latent(latent, noise_variables)
+    mix = 0 #not relevant to this function
+    latent = vary_latent(latent, noise_variables, mix)
     return latent
 
-def generate_image_latent(latent, scheduler, num_inference_steps, guidance_scales, models, prompts, neg_prompts, step_latent_variables, i2i, rgb, contrastives, models_in_memory, models_in_memory_old, model_ids, shiftback, t_models, skipstep):
+def generate_image_latent(latent, scheduler, num_inference_steps, guidance_scales, models, prompts, neg_prompts, step_latent_variables, i2i, rgb, contrastives, models_in_memory, models_in_memory_old, model_ids, shiftback, t_models, skipstep, mixmax_list, mixvalues):
     global prompt_defaults
     global cumulative_shift
     # Set counting variables
@@ -1079,156 +1086,188 @@ def generate_image_latent(latent, scheduler, num_inference_steps, guidance_scale
     last_text_model = -1
     last_prompts = []
         
+    latent_input=latent #to refer back to in case of mix
+    
+    # Expand mixmax_list and mixvalues if needed
+    if len(mixmax_list)<len(scheduler.timesteps):
+        mixmax_list_counter=0
+        slots_to_fill=len(scheduler.timesteps)-len(mixmax_list)
+        for j in range(slots_to_fill):
+            mixmax_list.append(mixmax_list[mixmax_list_counter])
+            mixvalues.append(mixvalues[mixmax_list_counter])
+            mixmax_list_counter+=1
+            if mixmax_list_counter==len(mixmax_list):
+                mixmax_list_counter=0
+    
     for tcount in range(len(scheduler.timesteps)-skipstep):
         t=scheduler.timesteps[tcount]
+        
         if tcount >= start_step:
 
             display_status("Inference timestep: "+str(tcount+1) +
                            "/"+str(len(scheduler.timesteps)))
             display_step(str(tcount+1) + "/"+str(len(scheduler.timesteps)))
-            if tcount == start_step or len(step_latent_variables) > 1:
-                latent = vary_latent(
-                    latent, step_latent_variables[step_latent_counter])
-                height = latent.shape[2]*8
-                width = latent.shape[3]*8
-            # If multiple models
-
-            if tcount == start_step or len(models['sequence']) > 1 or len(t_models['sequence'] > 1):
-
-                if models_in_memory == 1:
-                    if models['sequence'][model_counter] != last_model or models_in_memory_old == 0:
-                        models_in_memory_old = 1
-                        display_status("Loading stored model " +
-                                       str(models['sequence'][model_counter]))
-                        # Get the model for this step
-                        [unet] = models[models['sequence'][model_counter]]
-                    if t_models['sequence'][model_counter] != last_text_model or models_in_memory_old == 0:
-                        if len(t_models[t_models['sequence'][model_counter]]) == 2:
+            
+            noise_preds=[]
+            
+            for mix in range(mixmax_list[tcount]+1):
+                latent = latent_input
+            
+                if tcount == start_step or len(step_latent_variables) > 1:
+                    latent = vary_latent(
+                        latent, step_latent_variables[step_latent_counter][mix],mix)
+                    height = latent.shape[2]*8
+                    width = latent.shape[3]*8
+                # If multiple models
+    
+                if tcount == start_step or len(models['sequence']) > 1 or len(t_models['sequence'] > 1):
+    
+                    if models_in_memory == 1:
+                        if models['sequence'][model_counter][mix] != last_model or models_in_memory_old == 0:
+                            models_in_memory_old = 1
+                            display_status("Loading stored model " +
+                                           str(models['sequence'][model_counter][mix]))
                             # Get the model for this step
-                            [tokenizer, text_encoder] = t_models[t_models['sequence']
-                                                                 [model_counter]]
-                            tokenizer_2 = ''
-                            text_encoder_2 = ''
-                        elif len(t_models[t_models['sequence'][model_counter]]) == 4:
-                            [tokenizer, text_encoder, tokenizer_2,
-                                text_encoder_2] = t_models[t_models['sequence'][model_counter]]
-                    model_value = models['sequence'][model_counter]
-                    text_model_value = t_models['sequence'][model_counter]
-                else:
-                    if model_ids[models['sequence'][model_counter]] != last_model:
-                        display_status("Loading model " +
-                                       str(models['sequence'][model_counter]))
-                        unet = UNet2DConditionModel.from_pretrained(
-                            model_ids[models['sequence'][model_counter]], subfolder="unet")
-                        unet = unet.to(torch_device)
-                    if model_ids[t_models['sequence'][model_counter]] != last_text_model:
-                        text_encoder = CLIPTextModel.from_pretrained(
-                            model_ids[t_models['sequence'][model_counter]], subfolder="text_encoder")
-                        #text_encoder = text_encoder.to(torch_device)
-                        tokenizer = CLIPTokenizer.from_pretrained(
-                            model_ids[t_models['sequence'][model_counter]], subfolder="tokenizer")
-                        try:
-                            text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
-                                model_ids[t_models['sequence'][model_counter]], subfolder="text_encoder_2")
-                            # text_encoder_2 = text_encoder_2.to(torch_device) #OOM
-                            tokenizer_2 = CLIPTokenizer.from_pretrained(
-                                model_ids[t_models['sequence'][model_counter]], subfolder="tokenizer_2")
-                        except:
-                            text_encoder_2 = ''
-                            tokenizer_2 = ''
-                    model_value = model_ids[models['sequence'][model_counter]]
-                    text_model_value = model_ids[t_models['sequence']
-                                                 [model_counter]]
-            # If multiple models or prompts
-            if tcount == start_step or (model_value != last_model or text_model_value != last_text_model or prompts[prompt_counter] != last_prompts):
-                last_prompts = prompts[prompt_counter]
-                display_status("EMBEDDING:")
-                [embedding, pooled_embedding] = generate_prompt_embedding(
-                    prompts[prompt_counter], tokenizer, text_encoder, tokenizer_2, text_encoder_2)  # Get the embedding for this step
-                # CONTRASTIVE MANIPULATIONS HERE
-                if contrastives[contrastives_counter][0] != [[['', prompt_defaults], 0]]:
-                    display_status("Generating single-prompt contrastives:")
-                    embedding_reference = embedding  # Hold embedding stable
-                    pooled_embedding_reference = pooled_embedding
-                    for entry in contrastives[contrastives_counter][0]:
-                        [alt_embedding, pooled_alt_embedding] = generate_prompt_embedding(
-                            entry[0], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
-                        # What's distinctive about 'main' embedding
-                        embedding_diff = embedding_reference-alt_embedding
-                        embedding_diff *= entry[1]
-                        embedding += embedding_diff
-                        if pooled_embedding_reference != '':
-                            pooled_embedding_diff = pooled_embedding_reference-pooled_alt_embedding
-                            pooled_embedding_diff *= entry[1]
-                            pooled_embedding += pooled_embedding_diff
-                if contrastives[contrastives_counter][1] != [[['', prompt_defaults], ['', prompt_defaults], 0]]:
-                    display_status("Generating prompt-pair contrastives:")
-                    for entry in contrastives[contrastives_counter][1]:
-                        [alt_embedding_1, pooled_alt_embedding_1] = generate_prompt_embedding(
-                            entry[0], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
-                        [alt_embedding_2, pooled_alt_embedding_2] = generate_prompt_embedding(
-                            entry[1], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
-                        embedding_diff = alt_embedding_1-alt_embedding_2
-                        embedding += (embedding_diff*entry[2])
-                        if pooled_embedding != '':
-                            pooled_embedding_diff = pooled_alt_embedding_1-pooled_alt_embedding_2
-                            pooled_embedding += (pooled_embedding_diff *
-                                                 entry[2])
-                if text_encoder_2 == '' or neg_prompts[neg_prompt_counter][0] != '':
-                    display_status("UNCOND/NEG EMBEDDING:")
-                    [uncond_embedding, pooled_uncond_embedding] = generate_prompt_embedding(
-                        neg_prompts[neg_prompt_counter], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
-                    # If negative prompt is assigned a strength other than 1
-                    if neg_prompts[neg_prompt_counter][2] != 1 and neg_prompts[neg_prompt_counter][0] != '':
-                        if text_encoder_2 != '':  # ForSDXL-type models just multiply
-                            uncond_embedding *= neg_prompts[neg_prompt_counter][2]
-                        else:  # otherwise use difference from unconditional embedding
-                            [ref_uncond_embedding, ref_pooled_uncond_embedding] = generate_prompt_embedding(
-                                ['', [prompt_defaults, prompt_defaults]], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
-                            embedding_diff = uncond_embedding-ref_uncond_embedding
-                            uncond_embedding = ref_uncond_embedding + \
-                                (embedding_diff *
-                                 neg_prompts[neg_prompt_counter][2])
-                else:
-                    display_status("Using zeroed-out UNCOND/NEG EMBEDDING")
-                    uncond_embedding = torch.zeros_like(embedding)
-                    pooled_uncond_embedding = torch.zeros_like(
-                        pooled_embedding)
+                            [unet] = models[models['sequence'][model_counter][mix]]
+                        if t_models['sequence'][model_counter][mix] != last_text_model or models_in_memory_old == 0:
+                            if len(t_models[t_models['sequence'][model_counter][mix]]) == 2:
+                                # Get the model for this step
+                                [tokenizer, text_encoder] = t_models[t_models['sequence']
+                                                                     [model_counter][mix]]
+                                tokenizer_2 = ''
+                                text_encoder_2 = ''
+                            elif len(t_models[t_models['sequence'][model_counter][mix]]) == 4:
+                                [tokenizer, text_encoder, tokenizer_2,
+                                    text_encoder_2] = t_models[t_models['sequence'][model_counter][mix]]
+                        model_value = models['sequence'][model_counter][mix]
+                        text_model_value = t_models['sequence'][model_counter][mix]
+                    else:
+                        if model_ids[models['sequence'][model_counter][mix]] != last_model:
+                            display_status("Loading model " +
+                                           str(models['sequence'][model_counter][mix]))
+                            unet = UNet2DConditionModel.from_pretrained(
+                                model_ids[models['sequence'][model_counter][mix]], subfolder="unet")
+                            unet = unet.to(torch_device)
+                        if model_ids[t_models['sequence'][model_counter][mix]] != last_text_model:
+                            text_encoder = CLIPTextModel.from_pretrained(
+                                model_ids[t_models['sequence'][model_counter][mix]], subfolder="text_encoder")
+                            #text_encoder = text_encoder.to(torch_device)
+                            tokenizer = CLIPTokenizer.from_pretrained(
+                                model_ids[t_models['sequence'][model_counter][mix]], subfolder="tokenizer")
+                            try:
+                                text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
+                                    model_ids[t_models['sequence'][model_counter][mix]], subfolder="text_encoder_2")
+                                # text_encoder_2 = text_encoder_2.to(torch_device) #OOM
+                                tokenizer_2 = CLIPTokenizer.from_pretrained(
+                                    model_ids[t_models['sequence'][model_counter][mix]], subfolder="tokenizer_2")
+                            except:
+                                text_encoder_2 = ''
+                                tokenizer_2 = ''
+                        model_value = model_ids[models['sequence'][model_counter][mix]]
+                        text_model_value = model_ids[t_models['sequence']
+                                                     [model_counter][mix]]
+                # If multiple models or prompts
+                if tcount == start_step or (model_value != last_model or text_model_value != last_text_model or prompts[prompt_counter] != last_prompts):
+                    last_prompts = prompts[prompt_counter][mix]
+                    display_status("EMBEDDING:")
+                    [embedding, pooled_embedding] = generate_prompt_embedding(
+                        prompts[prompt_counter][mix], tokenizer, text_encoder, tokenizer_2, text_encoder_2)  # Get the embedding for this step
+                    # CONTRASTIVE MANIPULATIONS HERE
+                    if contrastives[contrastives_counter][mix][0] != [[['', prompt_defaults], 0]]:
+                        display_status("Generating single-prompt contrastives:")
+                        embedding_reference = embedding  # Hold embedding stable
+                        pooled_embedding_reference = pooled_embedding
+                        for entry in contrastives[contrastives_counter][mix][0]:
+                            [alt_embedding, pooled_alt_embedding] = generate_prompt_embedding(
+                                entry[0], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
+                            # What's distinctive about 'main' embedding
+                            embedding_diff = embedding_reference-alt_embedding
+                            embedding_diff *= entry[1]
+                            embedding += embedding_diff
+                            if pooled_embedding_reference != '':
+                                pooled_embedding_diff = pooled_embedding_reference-pooled_alt_embedding
+                                pooled_embedding_diff *= entry[1]
+                                pooled_embedding += pooled_embedding_diff
+                    if contrastives[contrastives_counter][mix][1] != [[['', prompt_defaults], ['', prompt_defaults], 0]]:
+                        display_status("Generating prompt-pair contrastives:")
+                        for entry in contrastives[contrastives_counter][mix][1]:
+                            [alt_embedding_1, pooled_alt_embedding_1] = generate_prompt_embedding(
+                                entry[0], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
+                            [alt_embedding_2, pooled_alt_embedding_2] = generate_prompt_embedding(
+                                entry[1], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
+                            embedding_diff = alt_embedding_1-alt_embedding_2
+                            embedding += (embedding_diff*entry[2])
+                            if pooled_embedding != '':
+                                pooled_embedding_diff = pooled_alt_embedding_1-pooled_alt_embedding_2
+                                pooled_embedding += (pooled_embedding_diff *
+                                                     entry[2])
+                    if text_encoder_2 == '' or neg_prompts[neg_prompt_counter][mix][0] != '':
+                        display_status("UNCOND/NEG EMBEDDING:")
+                        [uncond_embedding, pooled_uncond_embedding] = generate_prompt_embedding(
+                            neg_prompts[neg_prompt_counter][mix], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
+                        # If negative prompt is assigned a strength other than 1
+                        if neg_prompts[neg_prompt_counter][mix][2] != 1 and neg_prompts[neg_prompt_counter][mix][0] != '':
+                            if text_encoder_2 != '':  # ForSDXL-type models just multiply
+                                uncond_embedding *= neg_prompts[mix][neg_prompt_counter][2]
+                            else:  # otherwise use difference from unconditional embedding
+                                [ref_uncond_embedding, ref_pooled_uncond_embedding] = generate_prompt_embedding(
+                                    ['', [prompt_defaults, prompt_defaults]], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
+                                embedding_diff = uncond_embedding-ref_uncond_embedding
+                                uncond_embedding = ref_uncond_embedding + \
+                                    (embedding_diff *
+                                     neg_prompts[neg_prompt_counter][mix][2])
+                    else:
+                        display_status("Using zeroed-out UNCOND/NEG EMBEDDING")
+                        uncond_embedding = torch.zeros_like(embedding)
+                        pooled_uncond_embedding = torch.zeros_like(
+                            pooled_embedding)
+    
+                    embedding = torch.cat([uncond_embedding, embedding])
+    
+                # If multiple guidance scales
+                if tcount == start_step or len(guidance_scales) > 1:
+                    # Get the guidance scale for this step
+                    guidance_scale = guidance_scales[guidance_counter][mix]
+                latent_model_input = torch.cat([latent]*2)
+                latent_model_input = scheduler.scale_model_input(
+                    latent_model_input, timestep=t)
+                with torch.no_grad():
+                    if text_encoder_2 == '':
+                        noise_pred = unet(latent_model_input.to(
+                            torch_device), t, encoder_hidden_states=embedding.to(torch_device)).sample
+                    else:
+                        original_size = (width, height)
+                        target_size = (width, height)
+                        crops_coords_top_left = (0, 0)
+                        add_time_ids = torch.tensor(
+                            [list(original_size + crops_coords_top_left + target_size)])
+                        negative_add_time_ids = add_time_ids
+                        add_time_ids = torch.cat(
+                            [negative_add_time_ids, add_time_ids], dim=0).to(torch_device)
+                        add_text_embeds = torch.cat(
+                            [pooled_uncond_embedding, pooled_embedding], dim=0).to(torch_device)
+                        added_cond_kwargs = {
+                            "text_embeds": add_text_embeds, "time_ids": add_time_ids}
+                        noise_pred = unet(latent_model_input.to(torch_device), t, encoder_hidden_states=embedding.to(
+                            torch_device), added_cond_kwargs=added_cond_kwargs, return_dict=False)[0]
+    
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                noise_preds.append(noise_pred_uncond+guidance_scale * \
+                    (noise_pred_text - noise_pred_uncond))
+                    
+                last_model = model_value
+                last_text_model = text_model_value
+                
+            noise_pred_out=torch.zeros_like(noise_preds[0])      
+            for mixcounter,noise_pred_temp in enumerate(noise_preds):
+                noise_pred_out+=noise_pred_temp*mixvalues[tcount][mixcounter]
+                
+            #noise_pred_out=noise_preds[0]
+                
+            latent=scheduler.step(noise_pred_out, t, latent).prev_sample   
 
-                embedding = torch.cat([uncond_embedding, embedding])
-
-            # If multiple guidance scales
-            if tcount == start_step or len(guidance_scales) > 1:
-                # Get the guidance scale for this step
-                guidance_scale = guidance_scales[guidance_counter]
-            latent_model_input = torch.cat([latent]*2)
-            latent_model_input = scheduler.scale_model_input(
-                latent_model_input, timestep=t)
-            with torch.no_grad():
-                if text_encoder_2 == '':
-                    noise_pred = unet(latent_model_input.to(
-                        torch_device), t, encoder_hidden_states=embedding.to(torch_device)).sample
-                else:
-                    original_size = (width, height)
-                    target_size = (width, height)
-                    crops_coords_top_left = (0, 0)
-                    add_time_ids = torch.tensor(
-                        [list(original_size + crops_coords_top_left + target_size)])
-                    negative_add_time_ids = add_time_ids
-                    add_time_ids = torch.cat(
-                        [negative_add_time_ids, add_time_ids], dim=0).to(torch_device)
-                    add_text_embeds = torch.cat(
-                        [pooled_uncond_embedding, pooled_embedding], dim=0).to(torch_device)
-                    added_cond_kwargs = {
-                        "text_embeds": add_text_embeds, "time_ids": add_time_ids}
-                    noise_pred = unet(latent_model_input.to(torch_device), t, encoder_hidden_states=embedding.to(
-                        torch_device), added_cond_kwargs=added_cond_kwargs, return_dict=False)[0]
-
-            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-            noise_pred = noise_pred_uncond+guidance_scale * \
-                (noise_pred_text - noise_pred_uncond)
-
-            latent = scheduler.step(noise_pred, t, latent).prev_sample
+            #step-processed latent for resubmission
+            latent_input = latent
 
             # if last round and option is selected,
             if tcount == num_inference_steps-1 and cumulative_shift != [0, 0] and shiftback == 1:
@@ -1241,11 +1280,7 @@ def generate_image_latent(latent, scheduler, num_inference_steps, guidance_scale
                     h_shiftback += latent.shape[3]
                 latent = latent_shift(latent, v_shiftback, h_shiftback)
 
-
             # Iterate and/or reset counters
-            last_model = model_value
-            last_text_model = text_model_value
-            last_prompt = prompts[prompt_counter]
             model_counter += 1
             if model_counter == len(models['sequence']):
                 model_counter = 0
@@ -1267,9 +1302,26 @@ def generate_image_latent(latent, scheduler, num_inference_steps, guidance_scale
     display_step('')
     return latent
 
-def stagger_generate_image_latent(latent, concat_stepstarts, concat_stepvars, h_shift_in, v_shift_in, verticals, shiftback):
+def stagger_generate_image_latent(latent, concat_stepstarts, concat_stepvars, h_shift_in, v_shift_in, verticals, shiftback, mixmax_list, mixvalues):
+    #print(["0",concat_stepvars[0][0]])
+    #print(["1",concat_stepvars[0][1]])
+    #print(["2",concat_stepvars[0][2]])
+    #print(["3",concat_stepvars[0][3]])
+    #print(["4",concat_stepvars[0][4]])
+    #print(["5",concat_stepvars[0][5]])
+    #print(["6",concat_stepvars[0][6]])
+    #print(["7",concat_stepvars[0][7]])
+    #print(["8",concat_stepvars[0][8]])
+    #print(["9",concat_stepvars[0][9]])
+    #print(["10",concat_stepvars[0][10]])
+    #print(["11",concat_stepvars[0][11]])
+    #print(["12",concat_stepvars[0][12]])
+    #print(["13",concat_stepvars[0][13]])
+    #print(["14",concat_stepvars[0][14]])
+    #print(["15",concat_stepvars[0][15]])
+    
     # Largely duplicated from the generate_image_latent above
-    # but reworked for seamless generation of longer sound-spegtrographic latents
+    # but reworked for seamless generation of longer sound-spectrographic latents
     global prompt_defaults
     global cumulative_shift
     h_shift_count=0
@@ -1283,7 +1335,7 @@ def stagger_generate_image_latent(latent, concat_stepstarts, concat_stepvars, h_
             pieces_per_row = int(pieces_per_row)+1
         else:
             pieces_per_row = int(pieces_per_row)
-        # REORGANIZE LATENT AND STORE CORNER POINTS OF PIECES SOMEHOW
+        # REORGANIZE LATENT AND STORE CORNER POINTS OF PIECES
         new_latent = torch.zeros(
             1, 4, height_per_piece*verticals, width_per_piece*pieces_per_row)
         piece_coordinates = []
@@ -1304,9 +1356,10 @@ def stagger_generate_image_latent(latent, concat_stepstarts, concat_stepvars, h_
     contrastives_counter = 0
     step_latent_counter = 0
 
+
     i2i = concat_stepvars[0][7]
     num_inference_steps = concat_stepvars[0][1]
-    
+
     rgb = concat_stepvars[0][15]
 
     scheduler = concat_stepvars[0][0]
@@ -1349,196 +1402,212 @@ def stagger_generate_image_latent(latent, concat_stepstarts, concat_stepvars, h_
     old_text_model = -1
     for tcount in range(len(scheduler.timesteps)-skipstep):
         t=scheduler.timesteps[tcount]
-        
         if tcount >= start_step:
             display_status("Inference timestep: "+str(tcount+1) +
                            "/"+str(len(scheduler.timesteps)))
             display_step(str(tcount+1) + "/"+str(len(scheduler.timesteps)))
             for stagger_count in range(len(concat_stepstarts)-1):
-                display_status("Processing staggered chunk " +
-                               str(stagger_count))
-                # PROCESS ONE CHUNK OF CONCATENATED LATENT
-                guidance_scales = concat_stepvars[stagger_count][2]
-                prompts = concat_stepvars[stagger_count][4]
-                neg_prompts = concat_stepvars[stagger_count][5]
-                step_latent_variables = concat_stepvars[stagger_count][6]
-                contrastives = concat_stepvars[stagger_count][8]
+                noise_preds=[]
+                for mix in range(mixmax_list[tcount]+1):
+                    display_status("Processing staggered chunk " +
+                                   str(stagger_count))
+                    # PROCESS ONE CHUNK OF CONCATENATED LATENT
+                    
+                    def mixconvert(input_list,mix):
+                        temp_list=[]
+                        for step_entry in input_list:
+                            try:
+                                temp_list.append(step_entry[mix])
+                            except:
+                                temp_list.append(step_entry)
+                        return temp_list
+                    
+                    mix_temp=mix
 
-                # Get the model number for this stagger segment and this step
-                model_number = concat_stepvars[stagger_count][3][tcount]
-                text_model = concat_stepvars[stagger_count][13][tcount]
+                    guidance_scales = mixconvert(concat_stepvars[stagger_count][2],mix_temp)
+                    prompts = mixconvert(concat_stepvars[stagger_count][4],mix_temp) 
+                    neg_prompts = mixconvert(concat_stepvars[stagger_count][5],mix_temp)
+                    step_latent_variables = mixconvert(concat_stepvars[stagger_count][6],mix_temp)
+                    contrastives = mixconvert(concat_stepvars[stagger_count][8],mix_temp)
+                    # Get the model number for this stagger segment and this step
+                    model_number = concat_stepvars[stagger_count][3][tcount][mix_temp]
+                    text_model = concat_stepvars[stagger_count][13][tcount][mix_temp]
 
-                # Check if that model is already loaded as the current model
-                # Load it if it isn't
-                if model_number != old_model_number:
-                    if models_in_memory == 1:
-                        if model_number not in stored_unets:
+                    # Check if model is already loaded as the current model
+                    # Load it if it isn't
+                    if model_number != old_model_number:
+                        if models_in_memory == 1:
+                            if model_number not in stored_unets:
+                                unet = UNet2DConditionModel.from_pretrained(
+                                    model_ids[model_number], subfolder="unet")
+                                unet = unet.to(torch_device)
+                                stored_unets[model_number] = unet
+                            else:
+                                unet = stored_unets[model_number]
+                        else:
+                            display_status("Loading UNet " +
+                                           str(model_number)+" into memory")
                             unet = UNet2DConditionModel.from_pretrained(
                                 model_ids[model_number], subfolder="unet")
                             unet = unet.to(torch_device)
-                            stored_unets[model_number] = unet
+                    if text_model != old_text_model:
+                        if models_in_memory == 1:
+                            if text_model not in stored_text_encoders:
+                                text_encoder = CLIPTextModel.from_pretrained(
+                                    model_ids[text_model], subfolder="text_encoder")
+                                stored_text_encoders[text_model] = text_encoder
+                            else:
+                                text_encoder = stored_text_encoders[text_model]
+                            if text_model not in stored_tokenizers:
+                                tokenizer = CLIPTokenizer.from_pretrained(
+                                    model_ids[text_model], subfolder="tokenizer")
+                                stored_tokenizers[text_model] = tokenizer
+                            else:
+                                tokenizer = stored_tokenizers[text_model]
+                            try:
+                                if text_model not in stored_text_encoders_2:
+                                    text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
+                                        model_ids[text_model], subfolder="text_encoder_2")
+                                    stored_text_encoders_2[text_model] = text_encoder_2
+                                else:
+                                    text_encoder_2 = stored_text_encoders_2[text_model]
+                                if text_model not in stored_tokenizers_2:
+                                    tokenizer_2 = CLIPTokenizer.from_pretrained(
+                                        model_ids[text_model], subfolder="tokenizer_2")
+                                    stored_tokenizers_2[text_model] = tokenizer_2
+                                else:
+                                    tokenizer_2 = stored_tokenizers_2[text_model]
+                            except:
+                                text_encoder_2 = ''
+                                tokenizer_2 = ''
                         else:
-                            unet = stored_unets[model_number]
-                    else:
-                        display_status("Loading UNet " +
-                                       str(model_number)+" into memory")
-                        unet = UNet2DConditionModel.from_pretrained(
-                            model_ids[model_number], subfolder="unet")
-                        unet = unet.to(torch_device)
-                if text_model != old_text_model:
-                    if models_in_memory == 1:
-                        if text_model not in stored_text_encoders:
+                            display_status("Loading text model " +
+                                           str(text_model)+" into memory")
                             text_encoder = CLIPTextModel.from_pretrained(
                                 model_ids[text_model], subfolder="text_encoder")
-                            stored_text_encoders[text_model] = text_encoder
-                        else:
-                            text_encoder = stored_text_encoders[text_model]
-                        if text_model not in stored_tokenizers:
+                            #text_encoder = text_encoder.to(torch_device)
                             tokenizer = CLIPTokenizer.from_pretrained(
                                 model_ids[text_model], subfolder="tokenizer")
-                            stored_tokenizers[text_model] = tokenizer
-                        else:
-                            tokenizer = stored_tokenizers[text_model]
-                        try:
-                            if text_model not in stored_text_encoders_2:
+                            try:
                                 text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
                                     model_ids[text_model], subfolder="text_encoder_2")
-                                stored_text_encoders_2[text_model] = text_encoder_2
-                            else:
-                                text_encoder_2 = stored_text_encoders_2[text_model]
-                            if text_model not in stored_tokenizers_2:
                                 tokenizer_2 = CLIPTokenizer.from_pretrained(
                                     model_ids[text_model], subfolder="tokenizer_2")
-                                stored_tokenizers_2[text_model] = tokenizer_2
-                            else:
-                                tokenizer_2 = stored_tokenizers_2[text_model]
-                        except:
-                            text_encoder_2 = ''
-                            tokenizer_2 = ''
-                    else:
-                        display_status("Loading text model " +
-                                       str(text_model)+" into memory")
-                        text_encoder = CLIPTextModel.from_pretrained(
-                            model_ids[text_model], subfolder="text_encoder")
-                        #text_encoder = text_encoder.to(torch_device)
-                        tokenizer = CLIPTokenizer.from_pretrained(
-                            model_ids[text_model], subfolder="tokenizer")
-                        try:
-                            text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
-                                model_ids[text_model], subfolder="text_encoder_2")
-                            tokenizer_2 = CLIPTokenizer.from_pretrained(
-                                model_ids[text_model], subfolder="tokenizer_2")
-                        except:
-                            tokenizer_2 = ''
-                            text_encoder_2 = ''
+                            except:
+                                tokenizer_2 = ''
+                                text_encoder_2 = ''
+    
+                    last_prompts = []
+                    if stagger_count < len(concat_stepstarts)-1:
+                        if verticals == 1:
+                            temp_latent = latent[:, :, :, concat_stepstarts[stagger_count]
+                                :concat_stepstarts[stagger_count+1]]
+                        else:
+                            coord = piece_coordinates[stagger_count]
+                            temp_latent = latent[:, :, coord[0]
+                                :coord[1], coord[2]:coord[3]]
+    
+                    if tcount == start_step or len(step_latent_variables) > 1:
+                        temp_latent = vary_latent(
+                            temp_latent, step_latent_variables[step_latent_counter],mix)
+                        height = temp_latent.shape[2]*8
+                        width = temp_latent.shape[3]*8
+    
+                    # If multiple models or prompts
+                    if tcount == start_step or (prompts[prompt_counter] != last_prompts):
+                        last_prompts = prompts[prompt_counter]
+                        display_status("EMBEDDING:")
+                        [embedding, pooled_embedding] = generate_prompt_embedding(
+                            prompts[prompt_counter], tokenizer, text_encoder, tokenizer_2, text_encoder_2)  # Get the embedding for this step
+                        # CONTRASTIVE MANIPULATIONS HERE
+                        if contrastives[contrastives_counter][0] != [[['', prompt_defaults], 0]]:
+                            display_status(
+                                "Generating single-prompt contrastives:")
+                            embedding_reference = embedding  # Hold embedding stable
+                            pooled_embedding_reference = pooled_embedding
+                            for entry in contrastives[contrastives_counter][0]:
+                                [alt_embedding, pooled_alt_embedding] = generate_prompt_embedding(
+                                    entry[0], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
+                                # What's distinctive about 'main' embedding
+                                embedding_diff = embedding_reference-alt_embedding
+                                embedding_diff *= entry[1]
+                                embedding += embedding_diff
+                                if pooled_embedding_reference != '':
+                                    pooled_embedding_diff = pooled_embedding_reference-pooled_alt_embedding
+                                    pooled_embedding_diff *= entry[1]
+                                    pooled_embedding += pooled_embedding_diff
+                        if contrastives[contrastives_counter][1] != [[['', prompt_defaults], ['', prompt_defaults], 0]]:
+                            display_status("Generating prompt-pair contrastives:")
+                            for entry in contrastives[contrastives_counter][1]:
+                                [alt_embedding_1, pooled_alt_embedding_1] = generate_prompt_embedding(
+                                    entry[0], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
+                                [alt_embedding_2, pooled_alt_embedding_2] = generate_prompt_embedding(
+                                    entry[1], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
+                                embedding_diff = alt_embedding_1-alt_embedding_2
+                                embedding += (embedding_diff*entry[2])
+                                if pooled_embedding != '':
+                                    pooled_embedding_diff = pooled_alt_embedding_1-pooled_alt_embedding_2
+                                    pooled_embedding += (pooled_embedding_diff *
+                                                         entry[2])
+                        if text_encoder_2 == '' or neg_prompts[neg_prompt_counter][0] != '':
+                            display_status("UNCOND/NEG EMBEDDING:")
+                            [uncond_embedding, pooled_uncond_embedding] = generate_prompt_embedding(
+                                neg_prompts[neg_prompt_counter], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
+                            # If negative prompt is assigned a strength other than 1
+                            if neg_prompts[neg_prompt_counter][2] != 1 and neg_prompts[neg_prompt_counter][0] != '':
+                                if text_encoder_2 != '':  # ForSDXL-type models just multiply
+                                    uncond_embedding *= neg_prompts[neg_prompt_counter][2]
+                                else:  # otherwise use difference from unconditional embedding
+                                    [ref_uncond_embedding, ref_pooled_uncond_embedding] = generate_prompt_embedding(
+                                        ['', [prompt_defaults, prompt_defaults]], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
+                                    embedding_diff = uncond_embedding-ref_uncond_embedding
+                                    uncond_embedding = ref_uncond_embedding + \
+                                        (embedding_diff *
+                                         neg_prompts[neg_prompt_counter][2])
+                        else:
+                            display_status("Using zeroed-out UNCOND/NEG EMBEDDING")
+                            uncond_embedding = torch.zeros_like(embedding)
+                            pooled_uncond_embedding = torch.zeros_like(
+                                pooled_embedding)
+                        embedding = torch.cat([uncond_embedding, embedding])
+    
+                    # If multiple guidance scales
+                    if tcount == start_step or len(guidance_scales) > 1:
+                        # Get the guidance scale for this step
+                        guidance_scale = guidance_scales[guidance_counter]
+                    latent_model_input = torch.cat([temp_latent]*2)
+                    latent_model_input = scheduler_set[stagger_count].scale_model_input(
+                        latent_model_input, timestep=t)
+                    with torch.no_grad():
+                        if text_encoder_2 == '':
+                            noise_pred = unet(latent_model_input.to(
+                                torch_device), t, encoder_hidden_states=embedding.to(torch_device)).sample
+                        else:
+                            original_size = (width, height)
+                            target_size = (width, height)
+                            crops_coords_top_left = (0, 0)
+                            add_time_ids = torch.tensor(
+                                [list(original_size + crops_coords_top_left + target_size)])
+                            negative_add_time_ids = add_time_ids
+                            add_time_ids = torch.cat(
+                                [negative_add_time_ids, add_time_ids], dim=0).to(torch_device)
+                            add_text_embeds = torch.cat(
+                                [pooled_uncond_embedding, pooled_embedding], dim=0).to(torch_device)
+    
+                            added_cond_kwargs = {
+                                "text_embeds": add_text_embeds, "time_ids": add_time_ids}
+                            noise_pred = unet(latent_model_input.to(torch_device), t, encoder_hidden_states=embedding.to(
+                                torch_device), added_cond_kwargs=added_cond_kwargs, return_dict=False)[0]
+                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                    noise_preds.append(noise_pred_uncond+guidance_scale * \
+                        (noise_pred_text - noise_pred_uncond))
 
-                last_prompts = []
-                if stagger_count < len(concat_stepstarts)-1:
-                    if verticals == 1:
-                        temp_latent = latent[:, :, :, concat_stepstarts[stagger_count]
-                            :concat_stepstarts[stagger_count+1]]
-                    else:
-                        coord = piece_coordinates[stagger_count]
-                        temp_latent = latent[:, :, coord[0]
-                            :coord[1], coord[2]:coord[3]]
-
-                if tcount == start_step or len(step_latent_variables) > 1:
-                    temp_latent = vary_latent(
-                        temp_latent, step_latent_variables[step_latent_counter])
-                    height = temp_latent.shape[2]*8
-                    width = temp_latent.shape[3]*8
-
-                # If multiple models or prompts
-                if tcount == start_step or (prompts[prompt_counter] != last_prompts):
-                    last_prompts = prompts[prompt_counter]
-                    display_status("EMBEDDING:")
-                    [embedding, pooled_embedding] = generate_prompt_embedding(
-                        prompts[prompt_counter], tokenizer, text_encoder, tokenizer_2, text_encoder_2)  # Get the embedding for this step
-                    # CONTRASTIVE MANIPULATIONS HERE
-                    if contrastives[contrastives_counter][0] != [[['', prompt_defaults], 0]]:
-                        display_status(
-                            "Generating single-prompt contrastives:")
-                        embedding_reference = embedding  # Hold embedding stable
-                        pooled_embedding_reference = pooled_embedding
-                        for entry in contrastives[contrastives_counter][0]:
-                            [alt_embedding, pooled_alt_embedding] = generate_prompt_embedding(
-                                entry[0], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
-                            # What's distinctive about 'main' embedding
-                            embedding_diff = embedding_reference-alt_embedding
-                            embedding_diff *= entry[1]
-                            embedding += embedding_diff
-                            if pooled_embedding_reference != '':
-                                pooled_embedding_diff = pooled_embedding_reference-pooled_alt_embedding
-                                pooled_embedding_diff *= entry[1]
-                                pooled_embedding += pooled_embedding_diff
-                    if contrastives[contrastives_counter][1] != [[['', prompt_defaults], ['', prompt_defaults], 0]]:
-                        display_status("Generating prompt-pair contrastives:")
-                        for entry in contrastives[contrastives_counter][1]:
-                            [alt_embedding_1, pooled_alt_embedding_1] = generate_prompt_embedding(
-                                entry[0], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
-                            [alt_embedding_2, pooled_alt_embedding_2] = generate_prompt_embedding(
-                                entry[1], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
-                            embedding_diff = alt_embedding_1-alt_embedding_2
-                            embedding += (embedding_diff*entry[2])
-                            if pooled_embedding != '':
-                                pooled_embedding_diff = pooled_alt_embedding_1-pooled_alt_embedding_2
-                                pooled_embedding += (pooled_embedding_diff *
-                                                     entry[2])
-                    if text_encoder_2 == '' or neg_prompts[neg_prompt_counter][0] != '':
-                        display_status("UNCOND/NEG EMBEDDING:")
-                        [uncond_embedding, pooled_uncond_embedding] = generate_prompt_embedding(
-                            neg_prompts[neg_prompt_counter], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
-                        # If negative prompt is assigned a strength other than 1
-                        if neg_prompts[neg_prompt_counter][2] != 1 and neg_prompts[neg_prompt_counter][0] != '':
-                            if text_encoder_2 != '':  # ForSDXL-type models just multiply
-                                uncond_embedding *= neg_prompts[neg_prompt_counter][2]
-                            else:  # otherwise use difference from unconditional embedding
-                                [ref_uncond_embedding, ref_pooled_uncond_embedding] = generate_prompt_embedding(
-                                    ['', [prompt_defaults, prompt_defaults]], tokenizer, text_encoder, tokenizer_2, text_encoder_2)
-                                embedding_diff = uncond_embedding-ref_uncond_embedding
-                                uncond_embedding = ref_uncond_embedding + \
-                                    (embedding_diff *
-                                     neg_prompts[neg_prompt_counter][2])
-                    else:
-                        display_status("Using zeroed-out UNCOND/NEG EMBEDDING")
-                        uncond_embedding = torch.zeros_like(embedding)
-                        pooled_uncond_embedding = torch.zeros_like(
-                            pooled_embedding)
-                    embedding = torch.cat([uncond_embedding, embedding])
-
-                # If multiple guidance scales
-                if tcount == start_step or len(guidance_scales) > 1:
-                    # Get the guidance scale for this step
-                    guidance_scale = guidance_scales[guidance_counter]
-                latent_model_input = torch.cat([temp_latent]*2)
-                latent_model_input = scheduler_set[stagger_count].scale_model_input(
-                    latent_model_input, timestep=t)
-                with torch.no_grad():
-                    if text_encoder_2 == '':
-                        noise_pred = unet(latent_model_input.to(
-                            torch_device), t, encoder_hidden_states=embedding.to(torch_device)).sample
-                    else:
-                        original_size = (width, height)
-                        target_size = (width, height)
-                        crops_coords_top_left = (0, 0)
-                        add_time_ids = torch.tensor(
-                            [list(original_size + crops_coords_top_left + target_size)])
-                        negative_add_time_ids = add_time_ids
-                        add_time_ids = torch.cat(
-                            [negative_add_time_ids, add_time_ids], dim=0).to(torch_device)
-                        add_text_embeds = torch.cat(
-                            [pooled_uncond_embedding, pooled_embedding], dim=0).to(torch_device)
-
-                        added_cond_kwargs = {
-                            "text_embeds": add_text_embeds, "time_ids": add_time_ids}
-                        noise_pred = unet(latent_model_input.to(torch_device), t, encoder_hidden_states=embedding.to(
-                            torch_device), added_cond_kwargs=added_cond_kwargs, return_dict=False)[0]
-                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                noise_pred = noise_pred_uncond+guidance_scale * \
-                    (noise_pred_text - noise_pred_uncond)
-
+                noise_pred_out=torch.zeros_like(noise_preds[0])      
+                for mixcounter,noise_pred_temp in enumerate(noise_preds):
+                    noise_pred_out+=noise_pred_temp*mixvalues[tcount][mixcounter]
+        
                 temp_latent = scheduler_set[stagger_count].step(
-                    noise_pred, t, temp_latent).prev_sample
+                    noise_pred_out, t, temp_latent).prev_sample
 
                 # Substitute result of this step to the correct position concatenated whole latent
                 if verticals == 1:
@@ -1546,9 +1615,9 @@ def stagger_generate_image_latent(latent, concat_stepstarts, concat_stepvars, h_
                 else:
                     latent[:, :, coord[0]:coord[1],
                            coord[2]:coord[3]] = temp_latent
-                    
+                
             # Iterate and/or reset counters
-            last_prompt = prompts[prompt_counter]
+            last_prompts = prompts[prompt_counter]
             prompt_counter += 1
             if prompt_counter == len(prompts):
                 prompt_counter = 0
@@ -1564,7 +1633,7 @@ def stagger_generate_image_latent(latent, concat_stepstarts, concat_stepvars, h_
             step_latent_counter += 1
             if step_latent_counter == len(step_latent_variables):
                 step_latent_counter = 0
-
+    
             # AFTER PROCESSING THIS STEP, SHIFT WHOLE LATENT BY DESIGNATED AMOUNT
             # This is where the "staggering" occurs
             v_shift=v_shift_in[v_shift_count]
@@ -1603,7 +1672,6 @@ def stagger_generate_image_latent(latent, concat_stepstarts, concat_stepvars, h_
     display_step('')
     return latent
 
-
 def generate_image_from_latent(vae, latent):
     with torch.no_grad():
         image = vae.decode(
@@ -1614,7 +1682,6 @@ def generate_image_from_latent(vae, latent):
     image = Image.fromarray(image)
     return image
 
-
 def prepare_model_data(model_numbers, model_ids, model_prompts, models_in_memory):
     models = {}
     if models_in_memory == 1:  # Stores models in memory to avoid repeated loading at expense of memory usage
@@ -1623,22 +1690,25 @@ def prepare_model_data(model_numbers, model_ids, model_prompts, models_in_memory
         models['prompt'] = []
         model_counter = 0
         number_pool = []
-        for mcount, model_number in enumerate(model_numbers):
-            models['prompt'].append(model_prompts[model_number])
-            if model_number not in number_pool:
-                display_status('Unet sequence '+str(mcount)+': Storing UNet number ' +
-                               str(model_number)+' in position '+str(model_counter))
-                unet = UNet2DConditionModel.from_pretrained(
-                    model_ids[model_number], subfolder="unet")
-                unet = unet.to(torch_device)
-                number_pool.append(model_number)
-                models[model_counter] = [unet]
-                models['sequence'].append(model_counter)
-                model_counter += 1
-            else:
-                display_status('UNet sequence '+str(mcount)+': UNet number ' +
-                               str(model_number)+' already stored in memory')
-                models['sequence'].append(number_pool.index(model_number))
+        for mcount, model_number_dictionary in enumerate(model_numbers):
+            sequence_temp={}
+            for model_number in model_number_dictionary:
+                models['prompt'].append(model_prompts[model_number_dictionary[model_number]])
+                if model_number_dictionary[model_number] not in number_pool:
+                    display_status('Unet sequence '+str(mcount)+': Storing UNet number ' +
+                                   str(model_number_dictionary[model_number])+' in position '+str(model_counter))
+                    unet = UNet2DConditionModel.from_pretrained(
+                        model_ids[model_number_dictionary[model_number]], subfolder="unet")
+                    unet = unet.to(torch_device)
+                    number_pool.append(model_number_dictionary[model_number])
+                    models[model_counter] = [unet]
+                    sequence_temp[model_number]=model_counter
+                    model_counter += 1
+                else:
+                    display_status('UNet sequence '+str(mcount)+': UNet number ' +
+                                   str(model_number_dictionary[model_number])+' already stored in memory')
+                    sequence_temp[model_number]=number_pool.index(model_number_dictionary[model_number])
+            models['sequence'].append(sequence_temp)
     else:
         models['sequence'] = model_numbers
         models['prompt'] = []
@@ -1652,32 +1722,35 @@ def prepare_text_model_data(text_models, model_ids, models_in_memory):
         text_model_pool = []
         text_model_counter = 0
         t_models['sequence'] = []
-        for tcount, text_model in enumerate(text_models):
-            if text_model not in text_model_pool:
-                display_status('Text model sequence '+str(tcount)+': Storing text model number ' +
-                               str(text_model)+' in position '+str(text_model_counter))
-                text_encoder = CLIPTextModel.from_pretrained(
-                    model_ids[text_model], subfolder="text_encoder")
-                #text_encoder = text_encoder.to(torch_device)
-                tokenizer = CLIPTokenizer.from_pretrained(
-                    model_ids[text_model], subfolder="tokenizer")
-                try:
-                    text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
-                        model_ids[text_model], subfolder="text_encoder_2")
-                    # text_encoder_2=text_encoder_2.to(torch_device) #OOM error
-                    tokenizer_2 = CLIPTokenizer.from_pretrained(
-                        model_ids[text_model], subfolder="tokenizer_2")
-                    t_models[text_model_counter] = [tokenizer,
-                                                    text_encoder, tokenizer_2, text_encoder_2]
-                except:
-                    t_models[text_model_counter] = [tokenizer, text_encoder]
-                text_model_pool.append(text_model)
-                t_models['sequence'].append(text_model_counter)
-                text_model_counter += 1
-            else:
-                display_status('Text model sequence '+str(tcount) +
-                               ': Text model number '+str(text_model)+' already stored in memory')
-                t_models['sequence'].append(text_model_pool.index(text_model))
+        for tcount, text_model_dictionary in enumerate(text_models):
+            sequence_temp={}
+            for text_model in text_model_dictionary:
+                if text_model_dictionary[text_model] not in text_model_pool:
+                    display_status('Text model sequence '+str(tcount)+': Storing text model number ' +
+                                   str(text_model_dictionary[text_model])+' in position '+str(text_model_counter))
+                    text_encoder = CLIPTextModel.from_pretrained(
+                        model_ids[text_model_dictionary[text_model]], subfolder="text_encoder")
+                    #text_encoder = text_encoder.to(torch_device)
+                    tokenizer = CLIPTokenizer.from_pretrained(
+                        model_ids[text_model_dictionary[text_model]], subfolder="tokenizer")
+                    try:
+                        text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
+                            model_ids[text_model_dictionary[text_model]], subfolder="text_encoder_2")
+                        # text_encoder_2=text_encoder_2.to(torch_device) #OOM error
+                        tokenizer_2 = CLIPTokenizer.from_pretrained(
+                            model_ids[text_model_dictionary[text_model]], subfolder="tokenizer_2")
+                        t_models[text_model_counter] = [tokenizer,
+                                                        text_encoder, tokenizer_2, text_encoder_2]
+                    except:
+                        t_models[text_model_counter] = [tokenizer, text_encoder]
+                    text_model_pool.append(text_model_dictionary[text_model])
+                    sequence_temp[text_model]=text_model_counter
+                    text_model_counter += 1
+                else:
+                    display_status('Text model sequence '+str(tcount) +
+                                   ': Text model number '+str(text_model_dictionary[text_model])+' already stored in memory')
+                    sequence_temp[text_model]=text_model_pool.index(text_model_dictionary[text_model])
+            t_models['sequence'].append(sequence_temp)
     else:
         t_models['sequence'] = text_models
     return t_models
@@ -1689,7 +1762,6 @@ def spectrophone(image, filename, audio_channels, sample_rate, autype):
     padded_duration_ms = 400  # [ms]
     step_size_ms = 10
     mel_scale = True
-    max_mel_iters = 200
     num_griffin_lim_iters = 32
     window_duration_ms = 100
     n_fft = int(padded_duration_ms / 1000.0 * sample_rate)
@@ -1910,7 +1982,7 @@ def make_video(path, raw_job_string, job, nopt):
     out = cv2.VideoWriter(
         path+'.avi', cv2.VideoWriter_fourcc(*'MJPG'), 30, size)
     for i in range(len(img_array)):
-        x = out.write(img_array[i])
+        out.write(img_array[i])
     out.release()
     display_status('Video written.')
     
@@ -2006,8 +2078,6 @@ def spectralize(image, sample_rate, win_dur, audio_channels):
     angles = {}
     specgram = {}
     n_fft = int(400 / 1000.0 * sample_rate)
-    win_length = int(win_dur / 1000.0 * sample_rate)
-    hop_length = int(10 / 1000.0 * sample_rate)
     mel_inv_scaler = torchaudio.transforms.InverseMelScale(
         n_mels=512,
         sample_rate=sample_rate,
@@ -2691,12 +2761,6 @@ def engage_script(engage_mode):
                     job_string_input = job_string_input.replace(
                         '#copy '+copy_source,'',1)
                     
-                    try:
-                        [this_copy_job,job_remainder]=job_string_input.split('#copy')
-                    except:
-                        this_copy_job=job_string_input
-                        job_remainder=""
-                    
                     #copy_string is now the original job string from the pt
                     #addendum is now the string contents to add (up to next #copy)
                     
@@ -2822,6 +2886,8 @@ def engage_script(engage_mode):
                                         cell_count = 0
                                         step_count = 0
                                         loop_count = 0
+                                        mix_count = 0
+                                        mixmax = 0
                                         job = {}
                                         jobtemp = {}
 
@@ -2830,51 +2896,85 @@ def engage_script(engage_mode):
                                                 # Use to flag end of a #step sequence applied via #set
                                                 loop_count += 1
                                                 step_count = 0
+                                                mix_count = 0
                                                 cell_count += 1
-                                            if '#step' in job_string[cell_count] or '#start' in job_string[cell_count] or '$contrast' in job_string[cell_count]:
+                                            if '#step' in job_string[cell_count] or '#start' in job_string[cell_count] or '#mix' in job_string[cell_count] or '$contrast' in job_string[cell_count]:
                                                 if '$contrast' not in job_string[cell_count]:
                                                     if '#start' in job_string[cell_count]:
                                                         loop_count += 1
                                                         step_count = 0
+                                                        mix_count = 0
                                                     cell_count += 1
                                                 if loop_count not in jobtemp:
                                                     jobtemp[loop_count] = {}
                                                 if step_count not in jobtemp[loop_count]:
                                                     jobtemp[loop_count][step_count] = {
                                                     }
+                                                if mix_count not in jobtemp[loop_count][step_count]:
+                                                    jobtemp[loop_count][step_count][mix_count] = {}
                                                 con_count = 0  # count of contrastive entries
                                                 with_on = 0  # switch for turning on a 'with' entry
-                                                while cell_count < len(job_string) and '#' not in job_string[cell_count]:
-                                                    if '$with' in job_string[cell_count]:
-                                                        with_on = 1
-                                                        jobtemp[loop_count][step_count][con_count]['with'] = {
-                                                        }
-                                                        jobtemp[loop_count][step_count][con_count]['with']['prompt'] = job_string[cell_count+1]
-                                                        cell_count += 2
-                                                    elif '$contrast' in job_string[cell_count]:
-                                                        con_count += 1
-                                                        jobtemp[loop_count][step_count][con_count] = {
-                                                        }
-                                                        jobtemp[loop_count][step_count][con_count]['prompt'] = job_string[cell_count+1]
-                                                        cell_count += 2
-                                                        with_on = 0
-                                                    elif with_on == 1:
-                                                        jobtemp[loop_count][step_count][con_count]['with'][job_string[cell_count]
-                                                                                                           [1:]] = job_string[cell_count+1]
-                                                        cell_count += 2
-                                                    elif con_count == 0:
-                                                        jobtemp[loop_count][step_count][job_string[cell_count]
-                                                                                        [1:]] = job_string[cell_count+1]
-                                                        cell_count += 2
-                                                    else:
-                                                        jobtemp[loop_count][step_count][con_count][job_string[cell_count]
-                                                                                                   [1:]] = job_string[cell_count+1]
-                                                        cell_count += 2
-                                                step_count += 1
+                                                while cell_count < len(job_string):
+                                                    if '#' not in job_string[cell_count]:
+                                                        if '$with' in job_string[cell_count]:
+                                                            with_on = 1
+                                                            jobtemp[loop_count][step_count][mix_count][con_count]['with'] = {
+                                                            }
+                                                            jobtemp[loop_count][step_count][mix_count][con_count]['with']['prompt'] = job_string[cell_count+1]
+                                                            cell_count += 2
+                                                        elif '$contrast' in job_string[cell_count]:
+                                                            con_count += 1
+                                                            jobtemp[loop_count][step_count][mix_count][con_count] = {
+                                                            }
+                                                            jobtemp[loop_count][step_count][mix_count][con_count]['prompt'] = job_string[cell_count+1]
+                                                            cell_count += 2
+                                                            with_on = 0
+                                                        elif with_on == 1:
+                                                            jobtemp[loop_count][step_count][mix_count][con_count]['with'][job_string[cell_count]
+                                                                                                               [1:]] = job_string[cell_count+1]
+                                                            cell_count += 2
+                                                        elif con_count == 0:
+                                                            jobtemp[loop_count][step_count][mix_count][job_string[cell_count]
+                                                                                            [1:]] = job_string[cell_count+1]
+                                                            cell_count += 2
+                                                        else:
+                                                            jobtemp[loop_count][step_count][mix_count][con_count][job_string[cell_count]
+                                                                                                       [1:]] = job_string[cell_count+1]
+                                                            cell_count += 2
+                                                    elif '#mix' in job_string[cell_count]:
+                                                        mix_count += 1
+                                                        if mix_count>=mixmax:
+                                                            mixmax=mix_count
+                                                            jobtemp[loop_count][step_count]['mixmax']=mix_count
+                                                            jobtemp[loop_count][step_count][mix_count]={}
+                                                        cell_count += 1
+                                                    elif '#step' in job_string[cell_count]:
+                                                        cell_count += 1
+                                                        step_count += 1
+                                                        mix_count = 0
+                                                        if step_count not in jobtemp[loop_count]:
+                                                            jobtemp[loop_count][step_count] = {
+                                                            }
+                                                        if mix_count not in jobtemp[loop_count][step_count]:
+                                                            jobtemp[loop_count][step_count][mix_count] = {}
+                                                    elif '#start' in job_string[cell_count]:
+                                                        cell_count += 1
+                                                        loop_count += 1
+                                                        step_count = 0
+                                                        mix_count = 0
+                                                        if loop_count not in jobtemp:
+                                                            jobtemp[loop_count] = {
+                                                            }
+                                                        if step_count not in jobtemp[loop_count]:
+                                                            jobtemp[loop_count][step_count] = {
+                                                            }
+                                                        if mix_count not in jobtemp[loop_count][step_count]:
+                                                            jobtemp[loop_count][step_count][mix_count]={}
                                             else:
                                                 job[job_string[cell_count][1:]
                                                     ] = job_string[cell_count+1]
                                                 cell_count += 2
+                                        
                                         for loop in jobtemp:
                                             if 'steps' not in job:
                                                 job['steps'] = 20
@@ -2882,11 +2982,20 @@ def engage_script(engage_mode):
                                             for step in range(int(job['steps'])):
                                                 if step not in job:
                                                     job[step] = {}
+                                                if 'mixmax' not in job[step]:
+                                                    job[step]['mixmax']=0
                                                 for entry in jobtemp[loop][cycler]:
-                                                    job[step][entry] = jobtemp[loop][cycler][entry]
+                                                    if jobtemp[loop][cycler][entry]=='mixmax':
+                                                        if jobtemp[loop][cycler]['mixmax']>job[step]['mixmax']:
+                                                            job[step]['mixmax']=jobtemp[loop][cycler]['mixmax']
+                                                    else:
+                                                        if entry in job[step] and isinstance(entry,dict):
+                                                            job[step][entry].update(jobtemp[loop][cycler][entry])
+                                                        else:
+                                                            job[step][entry] = jobtemp[loop][cycler][entry]
                                                 cycler += 1
                                                 if cycler >= len(jobtemp[loop]):
-                                                    cycler = 0
+                                                    cycler = 0           
                                         # To catch any jobs without explicitly stated steps
                                         if 'steps' not in job:
                                             job['steps'] = 20
@@ -2928,7 +3037,6 @@ def engage_script(engage_mode):
                                     # status_text.update()
                                     display_status(
                                         "===================\nJOB "+str(cumulative_jobcount)+'\n===================')
-
                                     try:
                                         # Set non-step-specific variables
                                         if staggermode == 0 or filename_root == 'unassigned':
@@ -3086,9 +3194,12 @@ def engage_script(engage_mode):
                                             rgbparse = job['rgb'].split(',')
                                             for rgbcount,rgbvalue in enumerate(rgbparse):
                                                 noise_variables[6][0][rgbcount]=float(rgbvalue)
+                                            if noise_variables[6][0][3]>=1:
+                                                noise_variables[6][0][3]=0.9
+                                            elif noise_variables[6][0][3]<0:
+                                                noise_variables[6][0][3]=0
 
                                         # Initialize step-specific variables
-                                        prompt_variables = []
                                         prompts = []
                                         contrastives = []
                                         neg_prompts = []
@@ -3097,6 +3208,8 @@ def engage_script(engage_mode):
                                         model_numbers = []
                                         step_latent_variables = []
                                         text_models = []
+                                        mixvalues = []
+                                        mixmax_list=[]
 
                                         step = 0
                                         snshift_check = 0
@@ -3106,300 +3219,417 @@ def engage_script(engage_mode):
                                                 step_args = job[step]
                                             else:
                                                 step_args = job
+                                                
+                                            #Populate the following with defaults to avoid later errors    
+                                            if 'mixmax' not in step_args:
+                                                step_args['mixmax']=0
+                                            if 0 not in step_args:
+                                                step_args[0]=[]
 
                                             # Set prompt and prompt variables
-
-                                            # Set model
-                                            if 'model' in step_args:
-                                                model = num_parse(
-                                                    step_args['model'])[0][0]
-                                                model_numbers.append(model)
-                                            elif 'model' in job:
-                                                model = num_parse(
-                                                    job['model'])[0][0]
-                                                model_numbers.append(model)
-                                            else:
-                                                model = 0
-                                                model_numbers.append(0)
-
-                                            if 'txtmod' in step_args:
-                                                text_models.append(
-                                                    num_parse(step_args['txtmod'])[0][0])
-                                            elif 'txtmod' in job:
-                                                text_models.append(
-                                                    num_parse(job['txtmod'])[0][0])
-                                            else:
-                                                text_models.append(model)
-
-                                            # Set prompt
-                                            if 'prompt' in step_args:
-                                                prompt = step_args['prompt']
-                                            elif 'prompt' in job:
-                                                prompt = job['prompt']
-                                            else:
-                                                prompt = ''
-
-                                            if '2prompt' in step_args:
-                                                prompt = [
-                                                    prompt, job['2prompt']]
-                                            elif '2prompt' in job:
-                                                prompt = [
-                                                    prompt, job['2prompt']]
-
-                                            if '3prompt' in step_args:
-                                                try:
-                                                    prompt.append(
-                                                        job['3prompt'])
-                                                except:
-                                                    prompt = [
-                                                        prompt, prompt, job['3prompt']]
-                                            elif '3prompt' in job:
-                                                try:
-                                                    prompt.append(
-                                                        job['3prompt'])
-                                                except:
-                                                    prompt = [
-                                                        prompt, prompt, job['3prompt']]
-
-                                            # Make any specified model-specific adjustment to the prompt
-                                            if model_prompts[model_numbers[-1]] != '':
-                                                prompt = model_prompts[model_numbers[-1]].replace(
-                                                    '*', prompt)
-
-                                            # Set prompt variables
-                                            prompt_variables = prompt_defaults.copy()
-                                            arglist = ['raw+', 'proc+', '*', 'pad+', 'dyna-pad', 'avg-pad', 'padx', 'posx',
-                                                       'rawx', 'procx', 'endtok', '&', 'clipskip', 'cliprange', 'textx', 'text+', 'clipmore']
-                                            for argnum, arg in enumerate(arglist):
-                                                if arg in step_args:
-                                                    prompt_variables[argnum] = num_parse(
-                                                        step_args[arg])
-                                                elif arg in job:
-                                                    prompt_variables[argnum] = num_parse(
-                                                        job[arg])
-                                            if 'padfrom' in step_args:
-                                                prompt_variables[17]=step_args['padfrom']
-                                            elif 'padfrom' in job:
-                                                prompt_variables[17]=job['padfrom']
-                                                    
-                                            # Add prompt and prompt variables for this step to the list
-                                            if '2copy' in step_args or '2copy' in job:
-                                                prompt_variables2 = prompt_variables
-                                            else:
-                                                prompt_variables2 = prompt_defaults.copy()
-                                                arglist2 = ['2raw+', '2proc+', '2*', '2pad+', '2dyna-pad', '2avg-pad', '2padx', '2posx',
-                                                            '2rawx', '2procx', '2endtok', '2&', '2clipskip', '2cliprange', '2textx', '2text+', '2clipmore']
-                                                for argnum, arg in enumerate(arglist2):
-                                                    if arg in step_args:
-                                                        prompt_variables2[argnum] = num_parse(
-                                                            step_args[arg])
-                                                    elif arg in job:
-                                                        prompt_variables2[argnum] = num_parse(
-                                                            job[arg])
-                                                if '2padfrom' in step_args:
-                                                    prompt_variables2[16]=step_args['2padfrom']
-                                                elif '2padfrom' in job:
-                                                    prompt_variables2[16]=job['2padfrom']
-                                            prompts.append(
-                                                [prompt, [prompt_variables, prompt_variables2], 1])
-
-                                            # Set negative prompt and negative prompt variables
-                                            if 'neg_prompt' in step_args:
-                                                neg_prompt = step_args['neg_prompt']
-                                            elif 'neg_prompt' in job:
-                                                neg_prompt = job['neg_prompt']
-                                            else:
-                                                neg_prompt = ''
-                                            if '2neg_prompt' in step_args:
-                                                neg_prompt = [
-                                                    neg_prompt, step_args['2neg_prompt']]
-                                            elif '2neg_prompt' in job:
-                                                neg_prompt = [
-                                                    neg_prompt, job['2neg_prompt']]
-                                            if '3neg_prompt' in step_args:
-                                                try:
-                                                    neg_prompt.append(
-                                                        step_args['3neg_prompt'])
-                                                except:
-                                                    neg_prompt = [
-                                                        neg_prompt, neg_prompt, step_args['3neg_prompt']]
-                                            elif '3neg_prompt' in job:
-                                                try:
-                                                    neg_prompt.append(
-                                                        job['3neg_prompt'])
-                                                except:
-                                                    neg_prompt = [
-                                                        neg_prompt, neg_prompt, step_args['3neg_prompt']]
-
-                                            neg_prompt_variables = prompt_defaults.copy()
-                                            neg_arglist = ['neg_raw+', 'neg_proc+', 'neg_*', 'neg_pad+', 'neg_dyna-pad', 'neg_avg-pad', 'neg_padx', 'neg_posx',
-                                                           'neg_rawx', 'neg_procx', 'neg_endtok', 'neg_&', 'neg_clipskip', 'neg_cliprange', 'neg_textx', 'neg_text+', 'neg_clipmore']
-                                            for argnum, arg in enumerate(neg_arglist):
-                                                if arg in step_args:
-                                                    neg_prompt_variables[argnum] = num_parse(
-                                                        step_args[arg])
-                                                elif arg in job:
-                                                    neg_prompt_variables[argnum] = num_parse(
-                                                        job[arg])
-                                            if 'neg_padfrom' in step_args:
-                                                neg_prompt_variables[17]=step_args['neg_padfrom']
-                                            elif 'neg_padfrom' in job:
-                                                neg_prompt_variables[17]=job['neg_padfrom']
-                                            if '2neg_copy' in neg_arglist:
-                                                neg_prompt_variables2 = neg_prompt_variables
-                                            else:
-                                                neg_prompt_variables2 = prompt_defaults.copy()
-                                                neg_arglist2 = ['2neg_raw+', '2neg_proc+', '2neg_*', '2neg_pad+', '2neg_dyna-pad', '2neg_avg-pad', '2neg_padx', '2neg_posx',
-                                                                '2neg_rawx', '2neg_procx', '2neg_endtok', '2neg_&', '2neg_clipskip', '2neg_cliprange', '2neg_textx', '2neg_text+', '2neg_clipmore']
-                                                for argnum, arg in enumerate(neg_arglist2):
-                                                    if arg in step_args:
-                                                        neg_prompt_variables2[argnum] = num_parse(
-                                                            step_args[arg])
-                                                    elif arg in job:
-                                                        neg_prompt_variables2[argnum] = num_parse(
-                                                            job[arg])
-                                                if '2_neg_padfrom' in step_args:
-                                                    neg_prompt_variables[17]=step_args['2_neg_padfrom']
-                                                elif '2_neg_padfrom' in job:
-                                                    neg_prompt_variables[17]=job['2_neg_padfrom']
-                                            if 'negx' in step_args:
-                                                negx = num_parse(
-                                                    step_args['negx'])[0][0]
-                                            elif 'negx' in job:
-                                                negx = num_parse(
-                                                    job['negx'])[0][0]
-                                            else:
-                                                negx = 1
-                                            neg_prompts.append(
-                                                [neg_prompt, [neg_prompt_variables, neg_prompt_variables2], negx])
-
-                                            # Set guidance scales
-                                            if 'guid' in step_args:
-                                                guidance = num_parse(
-                                                    step_args['guid'])[0][0]
-                                                guidance_scales.append(
-                                                    guidance)
-                                            elif 'guid' in job:
-                                                guidance = num_parse(
-                                                    job['guid'])[0][0]
-                                                guidance_scales.append(
-                                                    guidance)
-                                            else:
-                                                guidance_scales.append(9)
-
-                                            # Set step-by-step latent adjustments
-                                            arglist_lat = [
-                                                'snx', 'sn+', 'sncat', 'snshift', 'snpart']
-                                            step_latent_variable = [[[1, 1, 1, 1]], [
-                                                [0, 0, 0, 0]], [[0]], [[0, 0]], [[0, 0, 0, 0, 0]]]
-                                            for argnum, arg in enumerate(arglist_lat):
-                                                if arg in step_args:
-                                                    step_latent_variable[argnum] = num_parse(
-                                                        step_args[arg])
-                                                elif arg in job:
-                                                    step_latent_variable[argnum] = num_parse(
-                                                        job[arg])
-                                            step_latent_variables.append(
-                                                step_latent_variable)
-                                            if 'snshift' in job or 'snshift' in step_args:
-                                                snshift_check = 1
-
-                                            # Get contrastives
-                                            contrastive_step = [[[['', prompt_defaults.copy()], 0]], [
-                                                [['', prompt_defaults.copy()], ['', prompt_defaults.copy()], 0]]]
-                                            con_counter = 1
-
-                                            while con_counter in step_args:
-                                                contrastive = step_args[con_counter]
-                                                if 'prompt' in contrastive:
-                                                    con_prompt = contrastive['prompt']
+                                            model_numbers_temp={}
+                                            text_models_temp={}
+                                            prompts_temp={}
+                                            neg_prompts_temp={}
+                                            step_latent_variables_temp={}
+                                            guidance_scales_temp={}
+                                            contrastives_temp={}
+                                            mixvalues_temp={}
+                                            try:
+                                                mixmax_list.append(job[step]['mixmax'])
+                                            except:
+                                                mixmax_list.append(0)
+                                            
+                                            for mix in range(step_args['mixmax']+1):                                              
+                                                # Set model
+                                                if 'model' in step_args[mix]:
+                                                    model = num_parse(
+                                                        step_args[mix]['model'])[0][0]
+                                                    model_numbers_temp[mix]=model
+                                                elif 'model' in step_args[0]:
+                                                    model = num_parse(
+                                                        step_args[0]['model'])[0][0]
+                                                    model_numbers_temp[mix]=model
+                                                elif 'model' in job:
+                                                    model = num_parse(
+                                                        job['model'])[0][0]
+                                                    model_numbers_temp[mix]=model
                                                 else:
-                                                    con_prompt = ''
-                                                if '2prompt' in contrastive:
-                                                    con_prompt = [
-                                                        con_prompt, contrastive['2prompt']]
-                                                if '3prompt' in contrastive:
+                                                    model = 0
+                                                    model_numbers_temp[mix]=0
+                                                    
+                                                if 'at' in step_args[mix]:
+                                                    mixvalues_temp[mix]=num_parse(step_args[mix]['at'])[0][0]
+                                                else:
+                                                    mixvalues_temp[mix]=None
+                                                    
+                                                if 'txtmod' in step_args[mix]:
+                                                    text_models_temp[mix]=num_parse(step_args[mix]['txtmod'])[0][0]
+                                                elif 'txtmod' in step_args[0]:
+                                                    text_models_temp[mix]=num_parse(step_args[0]['txtmod'])[0][0]
+                                                
+                                                elif 'txtmod' in job:
+                                                    text_models_temp[mix]=num_parse(job['txtmod'])[0][0]
+                                                else:
+                                                    text_models_temp[mix]=model
+    
+                                                # Set prompt
+                                                if 'prompt' in step_args[mix]:
+                                                    prompt = step_args[mix]['prompt']
+                                                elif 'prompt' in step_args[0]:
+                                                    prompt = step_args[0]['prompt']
+                                                elif 'prompt' in job:
+                                                    prompt = job['prompt']
+                                                else:
+                                                    prompt = ''
+    
+                                                if '2prompt' in step_args[mix]:
+                                                    prompt = [
+                                                        prompt, job['2prompt']]
+                                                elif '2prompt' in step_args[0]:
+                                                    prompt = [
+                                                        prompt, job['2prompt']]
+                                                elif '2prompt' in job:
+                                                    prompt = [
+                                                        prompt, job['2prompt']]
+    
+                                                if '3prompt' in step_args[mix]:
                                                     try:
-                                                        con_prompt.append(
+                                                        prompt.append(
                                                             job['3prompt'])
                                                     except:
-                                                        con_prompt = [
-                                                            con_prompt, con_prompt, contrastive['3prompt']]
-                                                con_prompt_variables = prompt_defaults.copy()
+                                                        prompt = [
+                                                            prompt, prompt, job['3prompt']]
+                                                if '3prompt' in step_args[0]:
+                                                    try:
+                                                        prompt.append(
+                                                            job['3prompt'])
+                                                    except:
+                                                        prompt = [
+                                                            prompt, prompt, job['3prompt']]
+                                                elif '3prompt' in job:
+                                                    try:
+                                                        prompt.append(
+                                                            job['3prompt'])
+                                                    except:
+                                                        prompt = [
+                                                            prompt, prompt, job['3prompt']]
+    
+                                                # Make any specified model-specific adjustment to the prompt
+                                                if model_prompts[model_numbers_temp[mix]] != '':
+                                                    prompt = model_prompts[model_numbers_temp[mix]].replace(
+                                                        '*', prompt)
+    
+                                                # Set prompt variables
+                                                prompt_variables = prompt_defaults.copy()
+                                                arglist = ['raw+', 'proc+', '*', 'pad+', 'dyna-pad', 'avg-pad', 'padx', 'posx',
+                                                           'rawx', 'procx', 'endtok', '&', 'clipskip', 'cliprange', 'textx', 'text+', 'clipmore']
                                                 for argnum, arg in enumerate(arglist):
-                                                    if arg in contrastive:
-                                                        con_prompt_variables[argnum] = num_parse(
-                                                            contrastive[arg])
-                                                if '2copy' in contrastive:
-                                                    con_prompt_variables2 = con_prompt_variables.copy()
+                                                    if arg in step_args[mix]:
+                                                        prompt_variables[argnum] = num_parse(
+                                                            step_args[mix][arg])
+                                                    elif arg in step_args[0]:
+                                                        prompt_variables[argnum] = num_parse(
+                                                            step_args[0][arg])
+                                                    elif arg in job:
+                                                        prompt_variables[argnum] = num_parse(
+                                                            job[arg])
+                                                if 'padfrom' in step_args[mix]:
+                                                    prompt_variables[17]=step_args[mix]['padfrom']
+                                                elif 'padfrom' in step_args[0]:
+                                                    prompt_variables[17]=step_args[0]['padfrom']
+                                                elif 'padfrom' in job:
+                                                    prompt_variables[17]=job['padfrom']
+                                                        
+                                                # Add prompt and prompt variables for this step to the list
+                                                # Adjust these to respect hierarchy?
+                                                if '2copy' in step_args[mix] or '2copy' in step_args[0] or '2copy' in job:
+                                                    prompt_variables2 = prompt_variables
                                                 else:
-                                                    con_prompt_variables2 = prompt_defaults.copy()
+                                                    prompt_variables2 = prompt_defaults.copy()
+                                                    arglist2 = ['2raw+', '2proc+', '2*', '2pad+', '2dyna-pad', '2avg-pad', '2padx', '2posx',
+                                                                '2rawx', '2procx', '2endtok', '2&', '2clipskip', '2cliprange', '2textx', '2text+', '2clipmore']
                                                     for argnum, arg in enumerate(arglist2):
-                                                        if arg in contrastive:
-                                                            con_prompt_variables2[argnum] = num_parse(
-                                                                contrastive[arg])
-                                                con_prompts = [con_prompt, [
-                                                    con_prompt_variables, con_prompt_variables2]]
-                                                if 'with' in contrastive:
-                                                    if contrastive_step[1][0] == [['', prompt_defaults], ['', prompt_defaults], 0]:
-                                                        # If the first entry is empty / default, remove it (for replacement)
-                                                        contrastive_step[1] = [
-                                                        ]
-                                                    if 'prompt' in contrastive['with']:
-                                                        with_prompt = contrastive['with']['prompt']
-                                                    else:
-                                                        with_prompt = ''
-                                                    if '2prompt' in contrastive['with']:
-                                                        with_prompt = [
-                                                            with_prompt, contrastive['with']['2prompt']]
-                                                    if '3prompt' in contrastive['with']:
-                                                        try:
-                                                            with_prompt.append(
-                                                                contrastive['with']['3prompt'])
-                                                        except:
-                                                            with_prompt = [
-                                                                with_prompt, with_prompt, contrastive['with']['3prompt']]
-                                                    with_prompt_variables = prompt_defaults.copy()
-                                                    for argnum, arg in enumerate(arglist):
-                                                        if arg in contrastive['with']:
-                                                            with_prompt_variables[argnum] = num_parse(
-                                                                contrastive['with'][arg])
-                                                    if '2copy' in contrastive['with']:
-                                                        with_prompt_variables2 = with_prompt_variables
-                                                    else:
-                                                        with_prompt_variables2 = prompt_defaults.copy()
-                                                        for argnum, arg in enumerate(arglist2):
-                                                            if arg in contrastive['with']:
-                                                                con_prompt_variables2[argnum] = num_parse(
-                                                                    contrastive['with'][arg])
-                                                    with_prompts = [with_prompt, [
-                                                        with_prompt_variables, with_prompt_variables2]]
-                                                    if 'by' in contrastive['with']:
-                                                        con_by = num_parse(
-                                                            contrastive['with']['by'])[0][0]
-                                                    elif 'by' in contrastive:  # dispreferred notation
-                                                        con_by = num_parse(
-                                                            contrastive['by'])[0][0]
-                                                    else:
-                                                        con_by = 1
-                                                    contrastive_step[1].append(
-                                                        [con_prompts, with_prompts, con_by])
+                                                        if arg in step_args[mix]:
+                                                            prompt_variables2[argnum] = num_parse(
+                                                                step_args[mix][arg])
+                                                        elif arg in step_args[0]:
+                                                            prompt_variables2[argnum] = num_parse(
+                                                                step_args[0][arg])
+                                                        elif arg in job:
+                                                            prompt_variables2[argnum] = num_parse(
+                                                                job[arg])
+                                                    if '2padfrom' in step_args[mix]:
+                                                        prompt_variables2[16]=step_args[mix]['2padfrom']
+                                                    elif '2padfrom' in step_args[0]:
+                                                        prompt_variables2[16]=step_args[0]['2padfrom']
+                                                    
+                                                    elif '2padfrom' in job:
+                                                        prompt_variables2[16]=job['2padfrom']
+                                                prompts_temp[mix]=[prompt, [prompt_variables, prompt_variables2], 1]
+    
+                                                # Set negative prompt and negative prompt variables
+                                                if 'neg_prompt' in step_args[mix]:
+                                                    neg_prompt = step_args[mix]['neg_prompt']
+                                                elif 'neg_prompt' in step_args[0]:
+                                                    neg_prompt = step_args[0]['neg_prompt']
+                                                elif 'neg_prompt' in job:
+                                                    neg_prompt = job['neg_prompt']
                                                 else:
-                                                    if contrastive_step[0][0] == [['', prompt_defaults], 0]:
-                                                        # If the first entry is empty / default, remove it (for replacement)
-                                                        contrastive_step[0] = [
-                                                        ]
-                                                    if 'by' in contrastive:
-                                                        con_by = num_parse(
-                                                            contrastive['by'])[0][0]
+                                                    neg_prompt = ''
+                                                if '2neg_prompt' in step_args[mix]:
+                                                    neg_prompt = [
+                                                        neg_prompt, step_args[mix]['2neg_prompt']]
+                                                elif '2neg_prompt' in step_args[0]:
+                                                    neg_prompt = [
+                                                        neg_prompt, step_args[mix]['2neg_prompt']]
+                                                elif '2neg_prompt' in job:
+                                                    neg_prompt = [
+                                                        neg_prompt, job['2neg_prompt']]
+                                                if '3neg_prompt' in step_args[mix]:
+                                                    try:
+                                                        neg_prompt.append(
+                                                            step_args[mix]['3neg_prompt'])
+                                                    except:
+                                                        neg_prompt = [
+                                                            neg_prompt, neg_prompt, step_args[mix]['3neg_prompt']]
+                                                elif '3neg_prompt' in step_args[0]:
+                                                    try:
+                                                        neg_prompt.append(
+                                                            step_args[0]['3neg_prompt'])
+                                                    except:
+                                                        neg_prompt = [
+                                                            neg_prompt, neg_prompt, step_args[0]['3neg_prompt']]
+                                                elif '3neg_prompt' in job:
+                                                    try:
+                                                        neg_prompt.append(
+                                                            job['3neg_prompt'])
+                                                    except:
+                                                        neg_prompt = [
+                                                            neg_prompt, neg_prompt, job['3neg_prompt']]
+    
+                                                neg_prompt_variables = prompt_defaults.copy()
+                                                neg_arglist = ['neg_raw+', 'neg_proc+', 'neg_*', 'neg_pad+', 'neg_dyna-pad', 'neg_avg-pad', 'neg_padx', 'neg_posx',
+                                                               'neg_rawx', 'neg_procx', 'neg_endtok', 'neg_&', 'neg_clipskip', 'neg_cliprange', 'neg_textx', 'neg_text+', 'neg_clipmore']
+                                                for argnum, arg in enumerate(neg_arglist):
+                                                    if arg in step_args[mix]:
+                                                        neg_prompt_variables[argnum] = num_parse(
+                                                            step_args[mix][arg])
+                                                    elif arg in step_args[0]:
+                                                        neg_prompt_variables[argnum] = num_parse(
+                                                            step_args[0][arg])
+                                                    elif arg in job:
+                                                        neg_prompt_variables[argnum] = num_parse(
+                                                            job[arg])
+                                                if 'neg_padfrom' in step_args[mix]:
+                                                    neg_prompt_variables[17]=step_args[mix]['neg_padfrom']
+                                                elif 'neg_padfrom' in step_args[0]:
+                                                    neg_prompt_variables[17]=step_args[0]['neg_padfrom']
+                                                elif 'neg_padfrom' in job:
+                                                    neg_prompt_variables[17]=job['neg_padfrom']
+                                                if '2neg_copy' in step_args[mix] or '2neg_copy' in step_args[0] or '2neg_copy' in job:
+                                                    neg_prompt_variables2 = neg_prompt_variables
+                                                else:
+                                                    neg_prompt_variables2 = prompt_defaults.copy()
+                                                    neg_arglist2 = ['2neg_raw+', '2neg_proc+', '2neg_*', '2neg_pad+', '2neg_dyna-pad', '2neg_avg-pad', '2neg_padx', '2neg_posx',
+                                                                    '2neg_rawx', '2neg_procx', '2neg_endtok', '2neg_&', '2neg_clipskip', '2neg_cliprange', '2neg_textx', '2neg_text+', '2neg_clipmore']
+                                                    for argnum, arg in enumerate(neg_arglist2):
+                                                        if arg in step_args[mix]:
+                                                            neg_prompt_variables2[argnum] = num_parse(
+                                                                step_args[mix][arg])
+                                                        elif arg in step_args[0]:
+                                                            neg_prompt_variables2[argnum] = num_parse(
+                                                                step_args[0][arg])
+                                                        elif arg in job:
+                                                            neg_prompt_variables2[argnum] = num_parse(
+                                                                job[arg])
+                                                    if '2_neg_padfrom' in step_args[mix]:
+                                                        neg_prompt_variables[17]=step_args[mix]['2_neg_padfrom']
+                                                    elif '2_neg_padfrom' in step_args[0]:
+                                                        neg_prompt_variables[17]=step_args[0]['2_neg_padfrom']
+                                                    elif '2_neg_padfrom' in job:
+                                                        neg_prompt_variables[17]=job['2_neg_padfrom']
+                                                if 'negx' in step_args[mix]:
+                                                    negx = num_parse(
+                                                        step_args[mix]['negx'])[0][0]
+                                                elif 'negx' in step_args[0]:
+                                                    negx = num_parse(
+                                                        step_args[0]['negx'])[0][0]
+                                                elif 'negx' in job:
+                                                    negx = num_parse(
+                                                        job['negx'])[0][0]
+                                                else:
+                                                    negx = 1
+                                                neg_prompts_temp[mix]=[neg_prompt, [neg_prompt_variables, neg_prompt_variables2], negx]
+    
+                                                # Set guidance scales
+                                                if 'guid' in step_args[mix]:
+                                                    guidance = num_parse(
+                                                        step_args[mix]['guid'])[0][0]
+                                                    guidance_scales_temp[mix]=guidance
+                                                elif 'guid' in step_args[0]:
+                                                    guidance = num_parse(
+                                                        step_args[0]['guid'])[0][0]
+                                                    guidance_scales_temp[mix]=guidance
+                                                elif 'guid' in job:
+                                                    guidance = num_parse(
+                                                        job['guid'])[0][0]
+                                                    guidance_scales_temp[mix]=guidance
+                                                else:
+                                                    guidance_scales_temp[mix]=9
+    
+                                                # Set step-by-step latent adjustments
+                                                arglist_lat = [
+                                                    'snx', 'sn+', 'sncat', 'snshift', 'snpart']
+                                                step_latent_variable = [[[1, 1, 1, 1]], [
+                                                    [0, 0, 0, 0]], [[0]], [[0, 0]], [[0, 0, 0, 0, 0]]]
+                                                for argnum, arg in enumerate(arglist_lat):
+                                                    if arg in step_args[mix]:
+                                                        step_latent_variable[argnum] = num_parse(
+                                                            step_args[mix][arg])
+                                                    elif arg in step_args[0]:
+                                                        step_latent_variable[argnum] = num_parse(
+                                                            step_args[0][arg])
+                                                    elif arg in job:
+                                                        step_latent_variable[argnum] = num_parse(
+                                                            job[arg])
+                                                step_latent_variables_temp[mix]=step_latent_variable
+                                                if 'snshift' in job or 'snshift' in step_args[mix] or 'snshift' in step_args[0]:
+                                                    snshift_check = 1
+    
+                                                # Get contrastives
+                                                contrastive_step = [[[['', prompt_defaults.copy()], 0]], [
+                                                    [['', prompt_defaults.copy()], ['', prompt_defaults.copy()], 0]]]
+                                                con_counter = 1
+                                            
+    
+                                                while con_counter in step_args[mix]:
+                                                    contrastive = step_args[mix][con_counter]
+                                                    if 'prompt' in contrastive:
+                                                        con_prompt = contrastive['prompt']
                                                     else:
-                                                        con_by = 1
-                                                    contrastive_step[0].append(
-                                                        [con_prompts, con_by])
-                                                con_counter += 1
-                                            # Append this step's contrastives to the multi-step contrastive array
-                                            contrastives.append(
-                                                contrastive_step)
+                                                        con_prompt = ''
+                                                    if '2prompt' in contrastive:
+                                                        con_prompt = [
+                                                            con_prompt, contrastive['2prompt']]
+                                                    if '3prompt' in contrastive:
+                                                        try:
+                                                            con_prompt.append(
+                                                                job['3prompt'])
+                                                        except:
+                                                            con_prompt = [
+                                                                con_prompt, con_prompt, contrastive['3prompt']]
+                                                    con_prompt_variables = prompt_defaults.copy()
+                                                    for argnum, arg in enumerate(arglist):
+                                                        if arg in contrastive:
+                                                            con_prompt_variables[argnum] = num_parse(
+                                                                contrastive[arg])
+                                                    if '2copy' in contrastive:
+                                                        con_prompt_variables2 = con_prompt_variables.copy()
+                                                    else:
+                                                        con_prompt_variables2 = prompt_defaults.copy()
+                                                        for argnum, arg in enumerate(arglist2):
+                                                            if arg in contrastive:
+                                                                con_prompt_variables2[argnum] = num_parse(
+                                                                    contrastive[arg])
+                                                    con_prompts = [con_prompt, [
+                                                        con_prompt_variables, con_prompt_variables2]]
+                                                    if 'with' in contrastive:
+                                                        if contrastive_step[1][0] == [['', prompt_defaults], ['', prompt_defaults], 0]:
+                                                            # If the first entry is empty / default, remove it (for replacement)
+                                                            contrastive_step[1] = [
+                                                            ]
+                                                        if 'prompt' in contrastive['with']:
+                                                            with_prompt = contrastive['with']['prompt']
+                                                        else:
+                                                            with_prompt = ''
+                                                        if '2prompt' in contrastive['with']:
+                                                            with_prompt = [
+                                                                with_prompt, contrastive['with']['2prompt']]
+                                                        if '3prompt' in contrastive['with']:
+                                                            try:
+                                                                with_prompt.append(
+                                                                    contrastive['with']['3prompt'])
+                                                            except:
+                                                                with_prompt = [
+                                                                    with_prompt, with_prompt, contrastive['with']['3prompt']]
+                                                        with_prompt_variables = prompt_defaults.copy()
+                                                        for argnum, arg in enumerate(arglist):
+                                                            if arg in contrastive['with']:
+                                                                with_prompt_variables[argnum] = num_parse(
+                                                                    contrastive['with'][arg])
+                                                        if '2copy' in contrastive['with']:
+                                                            with_prompt_variables2 = with_prompt_variables
+                                                        else:
+                                                            with_prompt_variables2 = prompt_defaults.copy()
+                                                            for argnum, arg in enumerate(arglist2):
+                                                                if arg in contrastive['with']:
+                                                                    con_prompt_variables2[argnum] = num_parse(
+                                                                        contrastive['with'][arg])
+                                                        with_prompts = [with_prompt, [
+                                                            with_prompt_variables, with_prompt_variables2]]
+                                                        if 'by' in contrastive['with']:
+                                                            con_by = num_parse(
+                                                                contrastive['with']['by'])[0][0]
+                                                        elif 'by' in contrastive:  # dispreferred notation
+                                                            con_by = num_parse(
+                                                                contrastive['by'])[0][0]
+                                                        else:
+                                                            con_by = 1
+                                                        contrastive_step[1].append(
+                                                            [con_prompts, with_prompts, con_by])
+                                                    else:
+                                                        if contrastive_step[0][0] == [['', prompt_defaults], 0]:
+                                                            # If the first entry is empty / default, remove it (for replacement)
+                                                            contrastive_step[0] = [
+                                                            ]
+                                                        if 'by' in contrastive:
+                                                            con_by = num_parse(
+                                                                contrastive['by'])[0][0]
+                                                        else:
+                                                            con_by = 1
+                                                        contrastive_step[0].append(
+                                                            [con_prompts, con_by])
+                                                    con_counter += 1
+                                                # Append this step's contrastives to the multi-step contrastive array
+                                                contrastives_temp[mix]=contrastive_step
+                                                
+                                                if 'contracopy' in step_args[mix]:
+                                                    contrastives_temp[mix]=contrastives_temp[0]
+                                                    
+                                                # process mixvalues_temp here so values for each step total 1
+                                                
+                                            model_numbers.append(model_numbers_temp)
+                                            text_models.append(text_models_temp)
+                                            prompts.append(prompts_temp)
+                                            neg_prompts.append(neg_prompts_temp)
+                                            guidance_scales.append(guidance_scales_temp)
+                                            step_latent_variables.append(step_latent_variables_temp)
+                                            contrastives.append(contrastives_temp)
+                                            
+                                            #process mixvalues_temp
+                                            for mixcounter,mixquantity in enumerate(mixmax_list):
+                                                if mixquantity==0:
+                                                    for val in mixvalues_temp:
+                                                        
+                                                        if mixvalues_temp[val]==None:
+                                                            mixvalues_temp[val]=1
+                                                else:
+                                                    mixtotal=1
+                                                    gapcounter=0
+                                                    for val in mixvalues_temp:
+                                                        
+                                                        if mixvalues_temp[val]!=None:
+                                                            mixtotal-=mixvalues_temp[val]
+                                                        else:
+                                                            gapcounter+=1
+                                                    for val in mixvalues_temp:
+                                                        
+                                                        if mixvalues_temp[val]==None:
+                                                            mixvalues_temp[val]=mixtotal/gapcounter
+                                            
+                                            mixvalues.append(mixvalues_temp)
+
                                             step += 1
                                         if 'shiftback' in job[0]:
                                             shiftback = int(
@@ -3408,7 +3638,6 @@ def engage_script(engage_mode):
                                             shiftback = 1
                                         else:
                                             shiftback = 0
-
                                     except Exception as e:
                                         display_status("Error: "+str(e))
                                         display_status(
@@ -3548,7 +3777,7 @@ def engage_script(engage_mode):
                                                         job['vae'])
                                                 else:
                                                     # if not specified, use the VAE of the model used in the final step
-                                                    vae_number = model_numbers[-1]
+                                                    vae_number = model_numbers[-1][0] #selects first
 
                                                 if model_numbers != old_model_numbers or resumption == 1:
                                                     if staggermode == 0:  # To avoid redundant model loads
@@ -3571,7 +3800,7 @@ def engage_script(engage_mode):
 
                                                 if scheduler_number != old_scheduler_number:
                                                     scheduler = set_scheduler(
-                                                        scheduler_number, model_numbers[0], model_ids, scheduler_model)
+                                                        scheduler_number, model_numbers[0][0], model_ids, scheduler_model)
                                                 if vae_number != old_vae_number:
                                                     display_status(
                                                         "Using VAE from model "+str(vae_number))
@@ -3587,7 +3816,7 @@ def engage_script(engage_mode):
 
                                                 if staggermode == 0:
                                                     latent = generate_image_latent(latent, scheduler, num_inference_steps, guidance_scales, models, prompts, neg_prompts, step_latent_variables,
-                                                                                   noise_variables[5][0],noise_variables[6][0][3], contrastives, models_in_memory, models_in_memory_old, model_ids, shiftback, t_models, skipstep)
+                                                                                   noise_variables[5][0],noise_variables[6][0][3], contrastives, models_in_memory, models_in_memory_old, model_ids, shiftback, t_models, skipstep,mixmax_list,mixvalues)
                                                     display_status(
                                                         'Inference complete.')
                                                     filename = filename_root+'_'+get_datestring()
@@ -3645,7 +3874,6 @@ def engage_script(engage_mode):
                                                         concat_latent.shape[3])
                                                     concat_stepvars.append([scheduler, num_inference_steps, guidance_scales, model_numbers, prompts, neg_prompts, step_latent_variables,
                                                                            noise_variables[5][0], contrastives, models_in_memory, models_in_memory_old, model_ids, shiftback, text_models, skipstep, noise_variables[6][0][3]])
-
                                         except Exception as e:
                                             display_status("Error: "+str(e))
                                             display_status(
@@ -3670,7 +3898,7 @@ def engage_script(engage_mode):
                                 if staggermode == 1:
                                     if resumption == 0:
                                         latent = stagger_generate_image_latent(
-                                            concat_latent, concat_stepstarts, concat_stepvars, stagger_h_shift, stagger_v_shift, stagger_verticals, stagger_shiftback)
+                                            concat_latent, concat_stepstarts, concat_stepvars, stagger_h_shift, stagger_v_shift, stagger_verticals, stagger_shiftback,mixmax_list,mixvalues)
                                         display_status('Inference complete.')
                                         filename = filename_root+'_'+get_datestring()
                                         if subfolder != None:
@@ -3713,7 +3941,7 @@ def engage_script(engage_mode):
                                                 display_status(
                                                     "Can't generate audio because image latent not decoded.")
 
-                                        old_scheduler = scheduler
+                                        old_scheduler_number = scheduler_number
                                         cumulative_shift = [0, 0]
                                         models_in_memory_old = models_in_memory
                                         file = open(path_to_resume_point, 'w')
@@ -3897,27 +4125,6 @@ def list_models():
                         display_status("Model "+str(model_counter)+": " +
                                        model_string[0].strip()+" +prompts: "+model_string[1].strip())
                     model_counter += 1
-                    
-def get_unique_models():
-    model_list=[]
-    try:
-        with open(path_to_config, 'r') as file:
-            configuration = file.read().replace('\n', '')
-    except:
-        configuration = ''
-    if configuration != '':
-        config_parts = configuration.split('#')
-        for config_part in config_parts:
-            if config_part.startswith('models'):
-                config_part = config_part[7:]
-                model_strings = config_part.split(';')
-                model_counter = 0
-                for model_string in model_strings:
-                    model_string = model_string.split(',')
-                    if model_string not in model_list:
-                        model_list.append(model_string)
-    return(model_list)
-
 
 def list_schedulers():
     scheduler_list = ['PNDMScheduler', 'DDIMScheduler', 'LMSDiscreteScheduler', 'EulerDiscreteScheduler', 'EulerAncestralDiscreteScheduler', 'DPMSolverMultistepScheduler', 'DDPMScheduler', 'KDPM2DiscreteScheduler',
@@ -3969,7 +4176,6 @@ def add_model():
     
 def color_picker():
     from tkinter import colorchooser
-    model_names=get_unique_models()
     color_code=colorchooser.askcolor(title="Choose color")
     display_status("RGB: "+str(color_code[0]))
     
