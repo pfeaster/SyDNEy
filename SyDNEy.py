@@ -1303,22 +1303,6 @@ def generate_image_latent(latent, scheduler, num_inference_steps, guidance_scale
     return latent
 
 def stagger_generate_image_latent(latent, concat_stepstarts, concat_stepvars, h_shift_in, v_shift_in, verticals, shiftback, mixmax_list, mixvalues):
-    #print(["0",concat_stepvars[0][0]])
-    #print(["1",concat_stepvars[0][1]])
-    #print(["2",concat_stepvars[0][2]])
-    #print(["3",concat_stepvars[0][3]])
-    #print(["4",concat_stepvars[0][4]])
-    #print(["5",concat_stepvars[0][5]])
-    #print(["6",concat_stepvars[0][6]])
-    #print(["7",concat_stepvars[0][7]])
-    #print(["8",concat_stepvars[0][8]])
-    #print(["9",concat_stepvars[0][9]])
-    #print(["10",concat_stepvars[0][10]])
-    #print(["11",concat_stepvars[0][11]])
-    #print(["12",concat_stepvars[0][12]])
-    #print(["13",concat_stepvars[0][13]])
-    #print(["14",concat_stepvars[0][14]])
-    #print(["15",concat_stepvars[0][15]])
     
     # Largely duplicated from the generate_image_latent above
     # but reworked for seamless generation of longer sound-spectrographic latents
@@ -2700,7 +2684,7 @@ def engage_script(engage_mode):
                     set_insertions.append(contrast.strip())
                     # Add #break at the end of (0) if it contains any #steps
                     if '#step' in string_to_unpack[0]:
-                        string_to_unpack[0] += ' #break '
+                        string_to_unpack[0] += ' #break ' 
                     # Create backup of current string_to_unpack[0]
                     backup_string_to_unpack = string_to_unpack[0]
                     # Append contrast segment to start of string_to_unpack[0] (to occur at end of preceding job)
@@ -2742,7 +2726,7 @@ def engage_script(engage_mode):
                     start_exp = job_string_input.find('#copy')
                     beforepart = job_string_input[:start_exp]
                     [copy_source,addendum] = job_string_input[start_exp +
-                                                   6:].split(' ', maxsplit=1)
+                                                   6:].split('@ ', maxsplit=1)
                     try:
                         [addendum,afterpart]= addendum.split('#copy',maxsplit=1)
                         afterpart="#new #copy"+afterpart
@@ -2764,7 +2748,7 @@ def engage_script(engage_mode):
                     #copy_string is now the original job string from the pt
                     #addendum is now the string contents to add (up to next #copy)
                     
-                    set_insertions.append(("#break "+addendum).strip())
+                    set_insertions.append(("#break "+addendum).strip()) 
                     
                     #split copy_string by #new
                     copy_string_pieces=copy_string.split("#new")
@@ -2782,17 +2766,18 @@ def engage_script(engage_mode):
                             copy_contrast=""
                         
                         if copy_piece_count==0:
-                            new_job_string+=copy_string_piece+' #break '+addendum+copy_contrast
+                            new_job_string+=copy_string_piece+' #break '+addendum+copy_contrast 
                         else:
                             # Handle case with closing #unstagger
                             if "#unstagger" in copy_string_piece:
                                 copy_string_piece_temp=copy_string_piece.replace("#unstagger","")
                                 new_job_string+="#new"+copy_string_piece_temp+' #break '+addendum+" #unstagger"
                             else:
-                                new_job_string+="#new"+copy_string_piece+' #break '+addendum    
+                                new_job_string+="#new"+copy_string_piece+' #break '+addendum
                         
                     job_string_input=new_job_string+afterpart
                     job_string_input = evalstring(job_string_input)
+
 
                 job_string_input_pieces = []
                 job_string_input_staggermode = []
@@ -2897,6 +2882,13 @@ def engage_script(engage_mode):
                                                 loop_count += 1
                                                 step_count = 0
                                                 mix_count = 0
+                                                if loop_count not in jobtemp:
+                                                    jobtemp[loop_count] = {}
+                                                if step_count not in jobtemp[loop_count]:
+                                                    jobtemp[loop_count][step_count] = {
+                                                    }
+                                                if mix_count not in jobtemp[loop_count][step_count]:
+                                                    jobtemp[loop_count][step_count][mix_count] = {}
                                                 cell_count += 1
                                             if '#step' in job_string[cell_count] or '#start' in job_string[cell_count] or '#mix' in job_string[cell_count] or '$contrast' in job_string[cell_count]:
                                                 if '$contrast' not in job_string[cell_count]:
@@ -2914,7 +2906,8 @@ def engage_script(engage_mode):
                                                     jobtemp[loop_count][step_count][mix_count] = {}
                                                 con_count = 0  # count of contrastive entries
                                                 with_on = 0  # switch for turning on a 'with' entry
-                                                while cell_count < len(job_string):
+                                                unbroke=1
+                                                while cell_count < len(job_string) and unbroke==1:
                                                     if '#' not in job_string[cell_count]:
                                                         if '$with' in job_string[cell_count]:
                                                             with_on = 1
@@ -2970,32 +2963,46 @@ def engage_script(engage_mode):
                                                             }
                                                         if mix_count not in jobtemp[loop_count][step_count]:
                                                             jobtemp[loop_count][step_count][mix_count]={}
+                                                    elif '#break' in job_string[cell_count]:
+                                                        unbroke=0 #break out of loop
                                             else:
-                                                job[job_string[cell_count][1:]
-                                                    ] = job_string[cell_count+1]
+                                                job[job_string[cell_count][1:]] = job_string[cell_count+1]
                                                 cell_count += 2
                                         
-                                        for loop in jobtemp:
-                                            if 'steps' not in job:
-                                                job['steps'] = 20
-                                            cycler = 0
-                                            for step in range(int(job['steps'])):
-                                                if step not in job:
-                                                    job[step] = {}
-                                                if 'mixmax' not in job[step]:
-                                                    job[step]['mixmax']=0
-                                                for entry in jobtemp[loop][cycler]:
-                                                    if jobtemp[loop][cycler][entry]=='mixmax':
+                                        if 'steps' not in job:
+                                            job['steps'] = 20
+                                        
+                                        #sets up all needed steps    
+                                        for step in range(int(job['steps'])):
+                                            if step not in job:
+                                                job[step] = {}
+                                            if 'mixmax' not in job[step]:
+                                                job[step]['mixmax']=0
+                                           
+                                        for loop in jobtemp: #goes through each loop
+                                            cycler = 0 #handles steps that are present 
+                                            for step in range(int(job['steps'])): #goes through steps
+                                                
+                                                for mix in jobtemp[loop][cycler]: #goes through mixes
+                                                    if mix=='mixmax':
                                                         if jobtemp[loop][cycler]['mixmax']>job[step]['mixmax']:
                                                             job[step]['mixmax']=jobtemp[loop][cycler]['mixmax']
                                                     else:
-                                                        if entry in job[step] and isinstance(entry,dict):
-                                                            job[step][entry].update(jobtemp[loop][cycler][entry])
-                                                        else:
-                                                            job[step][entry] = jobtemp[loop][cycler][entry]
+                                                        if mix not in job[step]:
+                                                            job[step][mix]={}
+                                                        for entry in jobtemp[loop][cycler][mix]: #goes through entries
+                                                            # cycler is the modulo step
+                                                            # mix is the mix
+                                                            # entry is the coordinator name
+                                                            # jobtemp[loop][cycler][mix][entry] is its value
+    
+                                                            if entry in job[step][mix] and isinstance(entry,dict):
+                                                                job[step][mix][entry].update(jobtemp[loop][cycler][mix][entry])
+                                                            else:
+                                                                job[step][mix][entry] = jobtemp[loop][cycler][mix][entry]
                                                 cycler += 1
                                                 if cycler >= len(jobtemp[loop]):
-                                                    cycler = 0           
+                                                    cycler = 0          
                                         # To catch any jobs without explicitly stated steps
                                         if 'steps' not in job:
                                             job['steps'] = 20
