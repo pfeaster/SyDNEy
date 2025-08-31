@@ -1051,6 +1051,8 @@ def generate_noise_latent(seed_to_use, secondary_seed, height, width, noise_vari
                                      scheduler.timesteps[start_step]]))
     if secondary_seed != None:
         torch.manual_seed(secondary_seed)
+    else:
+        torch.manual_seed(seed_to_use)
     mix = 0 #not relevant to this function
     latent = vary_latent(latent, noise_variables, mix)
     return latent
