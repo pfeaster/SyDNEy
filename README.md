@@ -13,14 +13,16 @@ SyDNEy is an interface for Stable Diffusion that offers a number of novel featur
 # Installation
 1. Make sure you have [Python](https://www.python.org/downloads/) installed, version 3.10 or later.
 2. Open a terminal (Command Prompt in Windows, Terminal in Mac/Linux).  You'll enter the commands that follow into it.
-3.  Steps 3 and 4 are optional but recommended; they'll keep SyDNEy from interfering with any other Python packages you might want to use.  First, create a virtual environment:`python -m venv sydney-env`
+3. Steps 3 and 4 are optional but recommended; they'll keep SyDNEy from interfering with any other Python packages you might want to use.  First, create a virtual environment:`python -m venv sydney-env`
 4. Then activate it.  On Windows, enter `sydney-env\Scripts\activate`; on Mac/Linux, enter `source sydney-env/bin/activate`. 
-5. If you have a discrete Nvidia GPU and want to take advantage of it when using SyDNEy, install a CUDA-enabled version of Torch: `pip install torch==2.12.0+cu122 torchvision==0.16.2+cu122 torchaudio==2.12.1+cu122 --extra-index-url https://download.pytorch.org/whl/cu122`
-6. Install SyDNEy: `pip install git+https://github.com/pfeaster/SyDNEy.git`
-7. Now just enter `sydney` and a SyDNEy window should open.
+5. If you have an Nvidia GPU and want to use it for GPU acceleration, install a CUDA-enabled version of Torch: `pip install torch==2.12.0+cu122 torchvision==0.16.2+cu122 torchaudio==2.12.1+cu122 --extra-index-url https://download.pytorch.org/whl/cu122`
+6. If you're installing on Linux and want to use SyDNEy's video output option, find and follow special instructions on installing OpenCV on Linux.
+7. Install SyDNEy: `pip install git+https://github.com/pfeaster/SyDNEy.git`
+8. Now just enter `sydney` and a SyDNEy window should open.
+9. After you're done with SyDNEy, you can (if you like) enter `deactivate` in your terminal to deactivate the virtual environment.
 
 # Instructions
-To launch SyDNEy, repeat steps 2, 4, and 7 as described above under Installation -- or just steps 2 and 7 if you skipped steps 3 and 4 previously.
+To launch SyDNEy, repeat steps 2, 4, and 8 as described above under Installation -- or just steps 2 and 8 if you skipped steps 3 and 4 previously.
 
 The first time you run SyDNEy, it will create a couple subfolders within its installation folder named SyDNEy_work (used for saving results) and SyDNEy_ref (used for configuration files, script backups, logs, and so forth).  Within the SyDNEy GUI, you can click "Load Backup," "Query Image," or "Query Script" to open a navigation window and see where these folders have been placed.  
 
