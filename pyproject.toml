@@ -17,6 +17,7 @@ dependencies = [
     "torchvision>=0.15.1,<0.17",
     "torchaudio>=2.0.1,<2.13",
     "diffusers>=0.18.2,<=0.20.2",
+    "huggingface-hub==0.25.2",
     "transformers>=4.28.1,<=4.32.1",
     "numpy>=1.24.3,<=1.26.3",
     "Pillow>=9.4.0,<=10.0.1",
