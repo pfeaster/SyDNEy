@@ -13,17 +13,18 @@ authors = [
 license = { text = "MIT" }  # Change if needed
 requires-python = ">=3.9"
 dependencies = [
-  "diffusers",
-  "transformers",
-  "torch",
-  "torchvision",
-  "pillow",
-  "numpy",
-  "soundfile",
-  "audio2numpy",
-  "torchaudio",
-  "scipy",
-  "opencv-python",
+    "torch>=2.1.0,<3.0",                 # Stable PyTorch for recent diffusers
+    "torchvision>=0.16.0,<0.17",         # Matching torchvision for PyTorch
+    "diffusers>=0.19.0,<0.20",           # Compatible diffusers for CLIP pipelines
+    "transformers>=4.33.0,<5.0",         # Ensures CLIPEncoder accepts return_dict
+    "numpy>=1.25.0,<2.0",                # Numerical operations
+    "Pillow>=10.0.0,<11.0",              # Image handling
+    "soundfile>=0.12.1,<0.13",           # Audio read/write
+    "audio2numpy>=1.2.2,<2.0",           # Audio processing
+    "torchaudio>=2.1.0,<3.0",            # PyTorch audio
+    "scipy>=1.12.0,<2.0",                # Signal processing
+    "opencv-python>=4.8.0,<5.0",         # CV operations
+    "tk"                                  # Tkinter GUI (usually comes with Python)
 ]
 
 [project.urls]
