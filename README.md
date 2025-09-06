@@ -20,7 +20,7 @@ SyDNEy is an interface for Stable Diffusion that offers a number of novel featur
 7. Now just enter `sydney` and a SyDNEy window should open.
 
 # Instructions
-To launch SyDNEy, repeat steps 2, 3, 4, and 7 as described above under Installation -- or just steps 2 and 7 if you skipped steps 3 and 4 previously.
+To launch SyDNEy, repeat steps 2, 4, and 7 as described above under Installation -- or just steps 2 and 7 if you skipped steps 3 and 4 previously.
 
 The first time you run SyDNEy, it will create a couple subfolders within its installation folder named SyDNEy_work (used for saving results) and SyDNEy_ref (used for configuration files, script backups, logs, and so forth).  Within the SyDNEy GUI, you can click "Load Backup," "Query Image," or "Query Script" to open a navigation window and see where these folders have been placed.  
 
