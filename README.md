@@ -15,7 +15,7 @@ SyDNEy is an interface for Stable Diffusion that offers a number of novel featur
 2. Open a terminal (Command Prompt in Windows, Terminal in Mac/Linux).  You'll enter the commands that follow into it.
 3. Steps 3 and 4 are optional but recommended; they'll keep SyDNEy from interfering with any other Python packages you might want to use.  First, create a virtual environment:`python -m venv sydney-env`
 4. Then activate it.  On Windows, enter `sydney-env\Scripts\activate`; on Mac/Linux, enter `source sydney-env/bin/activate`. 
-5. If you have an Nvidia GPU and want to use it for GPU acceleration, install a CUDA-enabled version of Torch: `pip install torch==2.12.0+cu122 torchvision==0.16.2+cu122 torchaudio==2.12.1+cu122 --extra-index-url https://download.pytorch.org/whl/cu122`
+5. If you have an Nvidia GPU and want to use it for GPU acceleration, install a CUDA-enabled version of Torch: `pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126`
 6. If you're installing on Linux and want to use SyDNEy's video output option, find and follow special instructions on installing OpenCV on Linux.
 7. Install SyDNEy: `pip install git+https://github.com/pfeaster/SyDNEy.git`
 8. Now just enter `sydney` and a SyDNEy window should open.
