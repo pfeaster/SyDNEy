@@ -62,13 +62,6 @@ try:
 except:
     missing_dependencies_video.append('OpenCV (cv2)')
 
-global prompt_defaults
-global old_vae_number
-global continue_script
-global cumulative_shift
-os.chdir(os.path.dirname(__file__))
-
-
 def write_config(path_to_config):
     config_lines = ['#models ',
                     'stable-diffusion-v1-5/stable-diffusion-v1-5;',
@@ -102,13 +95,18 @@ def write_config(path_to_config):
                     'nitrosocke/Nitro-Diffusion;',
                     'Envvi/Inkpunk-Diffusion;',
                     'proximasanfinetuning/luna-diffusion;',
-                    'CompVis/stable-diffusion-v1-1']
+                    'CompVis/stable-diffusion-v1-1;',
+                    'auffusion/auffusion-full-no-adapter;',
+                    'SG161222/Realistic_Vision_V1.3;',
+                    'Yntec/ThisIsReal;',
+                    'Yntec/Lyriel;',
+                    'danbrown/Lyriel-v1-5;',
+                    'darkstorm2150/Protogen_v2.2_Official_Release']
     with open(path_to_config, 'w') as file:
         for line in config_lines:
             file.write(line+'\n')
 
-
-# Set up names of reference files and create reference directories
+# Set up names of reference files, create reference directories, set up some global variables
 ref_dir = 'SyDNEy_ref'
 if not os.path.exists(ref_dir):
     os.mkdir(ref_dir)
@@ -128,7 +126,12 @@ script_backup_prefix = "/script_backup_"
 config_backup_prefix = "/config_backup_"
 backup_resume_prefix = "/resume_"
 work_dir = 'SyDNEy_work/'
-
+prompt_defaults = [[[0, 0, 0, 0, 0]], [[0, 0, 0, 0, 0]], [[0, 0, 0]], [[0, 0]], [[0]], [[0]], [[1]], [
+    [1]], [[1, 0, 0, 0, 0]], [[1, 0, 0, 0, 0]], [[0]], [[0, 0, 0, 0]], [[0]], [[0, 0, 0]], [[1]], [[0]],[[0, 0]],'']
+old_vae_number = [-1]
+continue_script = 1
+cumulative_shift = 0
+os.chdir(os.path.dirname(__file__))
 
 def set_scheduler(scheduler_number, first_model, model_ids, scheduler_model):
     # Save and re-use scheduler config to avoid needing to reload pipeline
@@ -485,8 +488,7 @@ def generate_prompt_embedding(prompt, tokenizer, text_encoder, tokenizer_2, text
                 attention_mask=None,
                 causal_attention_mask=causal_attention_mask,
                 output_attentions=None,
-                output_hidden_states=True,
-                return_dict=None,
+                output_hidden_states=True
             )
             if tokenizer_2 == '':  # for non-XL models
                 if prompt_variables[0][12] == [[0]]:  # variable 12 is clipskip
@@ -534,8 +536,7 @@ def generate_prompt_embedding(prompt, tokenizer, text_encoder, tokenizer_2, text
                         attention_mask=None,
                         causal_attention_mask=causal_attention_mask,
                         output_attentions=None,
-                        output_hidden_states=True,
-                        return_dict=None,
+                        output_hidden_states=True
                     )
                     num_layers=len(encoder_outputs.hidden_states)
                     if new_layers>=num_layers:
@@ -581,8 +582,7 @@ def generate_prompt_embedding(prompt, tokenizer, text_encoder, tokenizer_2, text
                         attention_mask=None,
                         causal_attention_mask=causal_attention_mask,
                         output_attentions=None,
-                        output_hidden_states=True,
-                        return_dict=None,
+                        output_hidden_states=True
                     )
                     num_layers=len(encoder_outputs.hidden_states)
                     if new_layers>=num_layers:
@@ -686,8 +686,7 @@ def generate_prompt_embedding(prompt, tokenizer, text_encoder, tokenizer_2, text
                     attention_mask=None,
                     causal_attention_mask=causal_attention_mask,
                     output_attentions=None,
-                    output_hidden_states=True,
-                    return_dict=None,
+                    output_hidden_states=True
                 )
                 processed_embedding = encoder_outputs.hidden_states[-(
                     2+prompt_variables[1][12][0][0])]
@@ -723,8 +722,7 @@ def generate_prompt_embedding(prompt, tokenizer, text_encoder, tokenizer_2, text
                         attention_mask=None,
                         causal_attention_mask=causal_attention_mask,
                         output_attentions=None,
-                        output_hidden_states=True,
-                        return_dict=None,
+                        output_hidden_states=True
                     )
                     num_layers=len(encoder_outputs.hidden_states)
                     if new_layers>=num_layers:
@@ -1251,7 +1249,7 @@ def generate_image_latent(latent, scheduler, num_inference_steps, guidance_scale
                         added_cond_kwargs = {
                             "text_embeds": add_text_embeds, "time_ids": add_time_ids}
                         noise_pred = unet(latent_model_input.to(torch_device), t, encoder_hidden_states=embedding.to(
-                            torch_device), added_cond_kwargs=added_cond_kwargs, return_dict=False)[0]
+                            torch_device), added_cond_kwargs=added_cond_kwargs)[0]
     
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_preds.append(noise_pred_uncond+guidance_scale * \
@@ -1583,7 +1581,7 @@ def stagger_generate_image_latent(latent, concat_stepstarts, concat_stepvars, h_
                             added_cond_kwargs = {
                                 "text_embeds": add_text_embeds, "time_ids": add_time_ids}
                             noise_pred = unet(latent_model_input.to(torch_device), t, encoder_hidden_states=embedding.to(
-                                torch_device), added_cond_kwargs=added_cond_kwargs, return_dict=False)[0]
+                                torch_device), added_cond_kwargs=added_cond_kwargs)[0]
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     noise_preds.append(noise_pred_uncond+guidance_scale * \
                         (noise_pred_text - noise_pred_uncond))
@@ -1661,7 +1659,7 @@ def stagger_generate_image_latent(latent, concat_stepstarts, concat_stepvars, h_
 def generate_image_from_latent(vae, latent):
     with torch.no_grad():
         image = vae.decode(
-            latent / vae.config.scaling_factor, return_dict=False)[0]
+            latent / vae.config.scaling_factor)[0]
     image = (image / 2 + 0.5).clamp(0, 1)
     image = image.detach().cpu().permute(0, 2, 3, 1).numpy()[0]
     image = (image * 255).round().astype("uint8")
@@ -4197,12 +4195,7 @@ def rgb_to_latent(r,g,b,vae):
     img_encoded=to_latent(img,vae)
     return[float(img_encoded[0][0][0][0]),float(img_encoded[0][1][0][0]),float(img_encoded[0][2][0][0]),float(img_encoded[0][3][0][0])]
     
-# MAIN FUNCTION WITH GUI
-prompt_defaults = [[[0, 0, 0, 0, 0]], [[0, 0, 0, 0, 0]], [[0, 0, 0]], [[0, 0]], [[0]], [[0]], [[1]], [
-    [1]], [[1, 0, 0, 0, 0]], [[1, 0, 0, 0, 0]], [[0]], [[0, 0, 0, 0]], [[0]], [[0, 0, 0]], [[1]], [[0]],[[0, 0]],'']
-old_vae_number = [-1]
-continue_script = 1
-cumulative_shift = 0
+# GUI setup
 
 root = tk.Tk()
 root.title('SyDNEy: Stable Diffusion Numerical Explorer')
@@ -4313,4 +4306,11 @@ color_picker_button.place(x=835, y=370)
 steps_text = tk.Text(root, bg="gray35", fg="white", height=2, width=7,font=("Arial",15))
 steps_text.place(x=835, y=410)
 
-tk.mainloop()
+def launch_gui():
+    tk.mainloop()
+    
+def main():
+    launch_gui()
+    
+if __name__ == "__main__":
+    main()
